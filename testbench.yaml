@@ -1,0 +1,6 @@
+providers:
+  - Webklex\IMAP\Providers\LaravelServiceProvider
+  - Mupy\MailListeners\MailListenersServiceProvider
+
+migrations:
+  - database/migrations

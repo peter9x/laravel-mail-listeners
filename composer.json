@@ -1,0 +1,75 @@
+{
+    "name": "peter9x/laravel-mail-listeners",
+    "description": "Read mailboxes (Microsoft Graph, IMAP) and turn every new email into Laravel events handled by queued listeners",
+    "type": "library",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Peter",
+            "email": "pedro.teixeira@mupy.io"
+        }
+    ],
+    "homepage": "https://github.com/peter9x/laravel-mail-listeners",
+    "keywords": [
+        "Laravel",
+        "mail",
+        "inbound",
+        "IMAP",
+        "Microsoft Graph",
+        "events",
+        "listeners"
+    ],
+    "require": {
+        "php": "^8.4",
+        "illuminate/console": "^11.0|^12.0",
+        "illuminate/database": "^11.0|^12.0",
+        "illuminate/queue": "^11.0|^12.0",
+        "illuminate/support": "^11.0|^12.0",
+        "illuminate/validation": "^11.0|^12.0",
+        "microsoft/kiota-authentication-phpleague": "^1.5",
+        "microsoft/microsoft-graph": "^2.26",
+        "webklex/laravel-imap": "^6.2"
+    },
+    "require-dev": {
+        "fakerphp/faker": "^1.23",
+        "laravel/pint": "^1.24",
+        "mockery/mockery": "^1.6",
+        "orchestra/testbench": "^10.4",
+        "pestphp/pest": "^3.7"
+    },
+    "config": {
+        "allow-plugins": {
+            "pestphp/pest-plugin": true,
+            "php-http/discovery": true
+        },
+        "sort-packages": true
+    },
+    "autoload": {
+        "psr-4": {
+            "Mupy\\MailListeners\\": "src/",
+            "Mupy\\MailListeners\\Database\\Factories\\": "database/factories/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Mupy\\MailListeners\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": [
+            "@php vendor/bin/pest"
+        ],
+        "lint": [
+            "@php vendor/bin/pint"
+        ]
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Mupy\\MailListeners\\MailListenersServiceProvider"
+            ]
+        }
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}
