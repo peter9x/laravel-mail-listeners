@@ -189,6 +189,7 @@ it('connects with the account settings and maps the messages within the exact pe
         ->and($emails[0]->providerMessageId)->toBe('2')
         ->and($emails[0]->internetMessageId)->toBe('abc@example.com')
         ->and($emails[0]->subject)->toBe('Fatura outubro')
+        ->and($emails[0]->subjectDecoded)->toBe('Fatura outubro')
         ->and($emails[0]->fromEmail)->toBe('fornecedor@example.com')
         ->and($emails[0]->fromName)->toBe('Fornecedor')
         ->and($emails[0]->to)->toBe(['fornecedores@onevetgroup.pt'])
@@ -233,6 +234,25 @@ it('fetches a single message again by its UID', function (): void {
     fakeImapServer([imapMessage(['uid' => 9, 'subject' => 'Reprocessar'])]);
 
     expect(app(ImapConnector::class)->message($account, '9')->subject)->toBe('Reprocessar');
+});
+
+it('decodes MIME encoded subjects, sender names and attachment names', function (): void {
+    $account = MailAccount::factory()->imap()->create();
+    fakeImapServer([imapMessage([
+        'uid' => 11,
+        'subject' => '=?UTF-8?Q?Envio_de_Fatura_Eletr=C3=B3nica:_FT_A/874906386_de_2026-09-20?=',
+        'from' => ['mail' => 'noreply@example.com', 'personal' => '=?ISO-8859-1?Q?Jo=E3o?='],
+        'attachments' => [imapAttachment('=?UTF-8?B?ZmF0dXJhX27Cul8xLnBkZg==?=', 'application/pdf', '%PDF')],
+    ])]);
+
+    $email = app(ImapConnector::class)->message($account, '11');
+    $attachments = app(ImapConnector::class)->attachments($account, '11');
+
+    expect($email->subject)->toBe('=?UTF-8?Q?Envio_de_Fatura_Eletr=C3=B3nica:_FT_A/874906386_de_2026-09-20?=')
+        ->and($email->subjectDecoded)->toBe('Envio de Fatura Eletrónica: FT A/874906386 de 2026-09-20')
+        ->and($email->subjectContains('eletrónica'))->toBeTrue()
+        ->and($email->fromName)->toBe('João')
+        ->and($attachments[0]->name)->toBe('fatura_nº_1.pdf');
 });
 
 it('turns IMAP errors into readable connector errors, including their cause', function (): void {

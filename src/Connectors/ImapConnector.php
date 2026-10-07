@@ -118,7 +118,7 @@ final readonly class ImapConnector implements MailConnector
                 $content = (string) $attachment->getContent();
 
                 return new EmailAttachment(
-                    name: (string) $attachment->getName(),
+                    name: $this->decodeHeader((string) $attachment->getName()),
                     contentType: $attachment->getMimeType() ?? $attachment->getContentType(),
                     size: mb_strlen($content, '8bit'),
                     content: $content,
@@ -209,6 +209,7 @@ final readonly class ImapConnector implements MailConnector
     {
         $from = $message->getFrom()->first();
         $messageId = mb_trim((string) $message->getMessageId());
+        $subject = mb_trim((string) $message->getSubject());
 
         try {
             $receivedAt = CarbonImmutable::instance($message->getDate()->toDate());
@@ -220,9 +221,9 @@ final readonly class ImapConnector implements MailConnector
             accountId: $account->id,
             providerMessageId: (string) $message->getUid(),
             internetMessageId: $messageId !== '' ? $messageId : null,
-            subject: mb_trim((string) $message->getSubject()),
+            subject: $subject,
             fromEmail: $from instanceof Address && $from->mail !== '' ? mb_strtolower(mb_trim($from->mail)) : null,
-            fromName: $from instanceof Address && $from->personal !== '' ? mb_trim($from->personal) : null,
+            fromName: $from instanceof Address && $from->personal !== '' ? mb_trim($this->decodeHeader($from->personal)) : null,
             to: array_values(array_filter(array_map(
                 fn (mixed $address): ?string => $address instanceof Address && $address->mail !== '' ? mb_strtolower(mb_trim($address->mail)) : null,
                 $message->getTo()->all(),
@@ -231,6 +232,7 @@ final readonly class ImapConnector implements MailConnector
             bodyContentType: $message->hasHTMLBody() ? 'html' : 'text',
             body: $message->hasHTMLBody() ? $message->getHTMLBody() : $message->getTextBody(),
             hasAttachments: $this->hasRealAttachments($message),
+            subjectDecoded: mb_trim($this->decodeHeader($subject)),
         );
     }
 
@@ -247,6 +249,21 @@ final readonly class ImapConnector implements MailConnector
         }
 
         return false;
+    }
+
+    /**
+     * Decodes MIME encoded words (e.g. "=?UTF-8?Q?Eletr=C3=B3nica?="). Without the PHP imap extension
+     * (removed in PHP 8.4), webklex returns some headers still encoded.
+     */
+    private function decodeHeader(string $value): string
+    {
+        if (! str_contains($value, '=?')) {
+            return $value;
+        }
+
+        $decoded = iconv_mime_decode($value, ICONV_MIME_DECODE_CONTINUE_ON_ERROR, 'UTF-8');
+
+        return $decoded !== false ? $decoded : mb_decode_mimeheader($value);
     }
 
     private function isInline(Attachment $attachment): bool

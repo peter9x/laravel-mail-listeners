@@ -22,6 +22,12 @@ final class InboundEmail
     private ?MailAccount $loadedAccount = null;
 
     /**
+     * Subject with MIME encoded words decoded (e.g. "=?UTF-8?Q?...?="); equal to `subject` when it was not encoded.
+     */
+    public readonly string $subjectDecoded;
+
+    /**
+     * @param  string  $subject  subject as received from the provider (it may still be MIME encoded)
      * @param  list<string>  $to
      */
     public function __construct(
@@ -39,7 +45,10 @@ final class InboundEmail
         public readonly bool $hasAttachments,
         /** Id of the `mail_listener_messages` row, set once the email is recorded. */
         public readonly ?int $messageId = null,
-    ) {}
+        ?string $subjectDecoded = null,
+    ) {
+        $this->subjectDecoded = $subjectDecoded ?? $subject;
+    }
 
     /**
      * Lazy state (account, attachments) is never serialized into the queue payload.
@@ -53,6 +62,7 @@ final class InboundEmail
             'providerMessageId',
             'internetMessageId',
             'subject',
+            'subjectDecoded',
             'fromEmail',
             'fromName',
             'to',
@@ -82,6 +92,7 @@ final class InboundEmail
             body: $this->body,
             hasAttachments: $this->hasAttachments,
             messageId: $messageId,
+            subjectDecoded: $this->subjectDecoded,
         );
     }
 
@@ -122,11 +133,11 @@ final class InboundEmail
     }
 
     /**
-     * Whether the subject contains any of the given needles (case-insensitive).
+     * Whether the decoded subject contains any of the given needles (case-insensitive).
      */
     public function subjectContains(string ...$needles): bool
     {
-        return array_any($needles, fn (string $needle): bool => $needle !== '' && mb_stripos($this->subject, $needle) !== false);
+        return array_any($needles, fn (string $needle): bool => $needle !== '' && mb_stripos($this->subjectDecoded, $needle) !== false);
     }
 
     /**

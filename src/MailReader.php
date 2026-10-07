@@ -158,7 +158,7 @@ final class MailReader
             [
                 'provider_message_id' => $email->providerMessageId,
                 'internet_message_id' => $email->internetMessageId !== null ? mb_substr($email->internetMessageId, 0, 512) : null,
-                'subject' => mb_substr($email->subject, 0, 1000),
+                'subject' => mb_substr($email->subjectDecoded, 0, 1000),
                 'from_email' => $email->fromEmail !== null ? mb_substr($email->fromEmail, 0, 255) : null,
                 'received_at' => $email->receivedAt,
                 'status' => MessageStatus::DISPATCHED,
