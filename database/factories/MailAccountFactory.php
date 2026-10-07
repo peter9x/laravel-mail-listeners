@@ -25,7 +25,7 @@ class MailAccountFactory extends Factory
             'connector' => 'microsoft_graph',
             'connector_settings' => ['tenant' => 'default', 'folder' => 'inbox'],
             'events' => [],
-            'poll_interval_minutes' => 5,
+            'poll_cron' => '*/5 * * * *',
             'read_from' => now()->subDay(),
             'active' => true,
             'managed' => false,

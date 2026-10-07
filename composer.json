@@ -21,6 +21,7 @@
     ],
     "require": {
         "php": "^8.4",
+        "dragonmantank/cron-expression": "^3.4",
         "illuminate/console": "^11.0|^12.0",
         "illuminate/database": "^11.0|^12.0",
         "illuminate/queue": "^11.0|^12.0",

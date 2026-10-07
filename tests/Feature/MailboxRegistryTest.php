@@ -46,6 +46,11 @@ it('creates the accounts defined in code on poll and queues their reading', func
         ->readFrom('2026-10-01');
 
     $this->artisan('mail-listeners:poll')->assertSuccessful();
+    // A new account waits for its first run time.
+    Queue::assertNothingPushed();
+
+    $this->travel(10)->minutes();
+    $this->artisan('mail-listeners:poll')->assertSuccessful();
 
     $account = MailAccount::query()->sole();
 
@@ -54,7 +59,7 @@ it('creates the accounts defined in code on poll and queues their reading', func
         ->and($account->connector)->toBe('microsoft_graph')
         ->and($account->connector_settings)->toBe(['tenant' => 'other', 'folder' => 'invoices'])
         ->and($account->events)->toBe([SupplierEmailReceived::class, 'hr'])
-        ->and($account->poll_interval_minutes)->toBe(10)
+        ->and($account->poll_cron)->toBe('*/10 * * * *')
         ->and($account->read_from->toDateString())->toBe('2026-10-01')
         ->and($account->active)->toBeTrue()
         ->and($account->isManaged())->toBeTrue()
@@ -196,4 +201,44 @@ it('returns the same definition when a mailbox is defined twice', function (): v
     expect(MailListeners::mailbox('INVOICES@example.com'))->toBe($first)
         ->and(MailListeners::all())->toHaveCount(1)
         ->and(MailListeners::has('Invoices@Example.com'))->toBeTrue();
+});
+
+it('polls an account defined in code on a cron expression', function (): void {
+    $definition = MailListeners::mailbox('invoices@example.com')->connector('microsoft_graph')->events('supplier')->cron('0 6 * * *');
+    app(MailboxRegistry::class)->sync();
+
+    expect(MailAccount::query()->sole()->poll_cron)->toBe('0 6 * * *');
+
+    $definition->pollEvery(10);
+    app(MailboxRegistry::class)->sync();
+
+    expect(MailAccount::query()->sole()->poll_cron)->toBe('*/10 * * * *');
+});
+
+it('stores the polling period as a cron expression', function (int $minutes, string $cron): void {
+    expect(MailListeners::mailbox('invoices@example.com')->pollEvery($minutes)->cronExpression())->toBe($cron);
+})->with([
+    [1, '* * * * *'],
+    [5, '*/5 * * * *'],
+    [30, '*/30 * * * *'],
+    [60, '0 * * * *'],
+    [120, '0 */2 * * *'],
+    [720, '0 */12 * * *'],
+]);
+
+it('polls every 5 minutes by default', function (): void {
+    expect(MailListeners::mailbox('invoices@example.com')->cronExpression())->toBe('*/5 * * * *');
+});
+
+it('rejects polling periods that are not aligned to the clock', function (int $minutes): void {
+    MailListeners::mailbox('invoices@example.com')->pollEvery($minutes);
+})->throws(InvalidArgumentException::class, 'Use cron() instead')->with([0, 7, 45, 90, 300, 1440]);
+
+it('reports an invalid cron expression', function (): void {
+    MailListeners::mailbox('invoices@example.com')->connector('microsoft_graph')->events('supplier')->cron('every morning');
+
+    $result = app(MailboxRegistry::class)->sync();
+
+    expect($result['errors']['invoices@example.com'])->toBe(['Invalid cron expression [every morning].'])
+        ->and(MailAccount::query()->count())->toBe(0);
 });

@@ -21,7 +21,8 @@ return new class extends Migration
             // Encrypted (`encrypted:array` cast): connector settings may hold secrets, e.g. the IMAP password.
             $table->text('connector_settings')->nullable();
             $table->json('events');
-            $table->unsignedSmallInteger('poll_interval_minutes')->default(5);
+            // Cron expression the account is polled on, e.g. every 5 minutes or "0 6 * * *" (every day at 06:00).
+            $table->string('poll_cron', 100)->default('*/5 * * * *');
             $table->timestampTz('read_from')->nullable();
             $table->boolean('active')->default(true)->index();
             // Defined in code (MailListeners::mailbox()) and kept in sync by the package.

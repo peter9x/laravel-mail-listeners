@@ -16,8 +16,17 @@ admin UI, permissions and schedule.
 
 ```bash
 composer require peter9x/laravel-mail-listeners
-php artisan vendor:publish --tag=mail-listeners-config
+php artisan mail-listeners:install
 php artisan migrate
+```
+
+`mail-listeners:install` publishes the config and `app/Providers/MailListenersServiceProvider.php` (where the
+[mailboxes are defined](#mailboxes-defined-in-code)), and registers the provider in `bootstrap/providers.php`. Running it
+again never overwrites a published provider. To publish them one by one:
+
+```bash
+php artisan vendor:publish --tag=mail-listeners-config
+php artisan vendor:publish --tag=mail-listeners-provider
 ```
 
 ## Configuration (`config/mail-listeners.php`)
@@ -94,23 +103,24 @@ for the `mail-listeners` and `mail-listeners-listeners` queues (see `queues` in 
 
 ## Mailboxes defined in code
 
-Define the mailboxes in the `boot()` of a service provider (e.g. `AppServiceProvider`): email, connector with its
-settings, and the events fired for every new email. Nothing has to be inserted in the database.
+Define the mailboxes in the `mailboxes()` method of the published `App\Providers\MailListenersServiceProvider` (or in
+the `boot()` of any other service provider): email, connector with its settings, and the events fired for every new
+email. Nothing has to be inserted in the database.
 
 ```php
 use App\Events\HrEmailReceived;
 use App\Events\SupplierEmailReceived;
 use Mupy\MailListeners\Facades\MailListeners;
 
-public function boot(): void
+protected function mailboxes(): void
 {
     // Office 365: the tenant credentials come from `mail-listeners.microsoft_graph.tenants`.
     MailListeners::mailbox('invoices@example.com')
         ->name('Invoices')                                  // optional, default: the email
         ->connector('microsoft_graph', ['tenant' => 'default', 'folder' => 'inbox'])
         ->events(SupplierEmailReceived::class)              // event classes and/or keys of `mail-listeners.events`
-        ->pollEvery(5)                                      // optional, minutes, default 5
-        ->readFrom('2026-10-01')                            // optional, a fixed date (default: when first synced)
+        ->pollEvery(5)                                      // optional, every 5 minutes (the default)
+        ->readFrom('01-10-2026')                            // optional, a fixed date (default: when first synced)
         ->active((bool) env('MAIL_INVOICES_ACTIVE', true)); // optional, default true
 
     // IMAP: user and password.
@@ -122,11 +132,22 @@ public function boot(): void
             'username' => 'hr@example.com',
             'password' => env('MAIL_HR_PASSWORD'),
         ])
-        ->events(HrEmailReceived::class, SupplierEmailReceived::class);
+        ->events(HrEmailReceived::class, SupplierEmailReceived::class)
+        ->cron('0 6 * * *');                                // every day at 06:00 instead of every N minutes
 }
 ```
 
 Event classes must extend `Mupy\MailListeners\Events\EmailReceived`; they do not have to be registered in the config.
+
+When a mailbox is read is a single cron expression (the `poll_cron` column), set with either:
+
+- `pollEvery(N)`: every N minutes, aligned to the clock (default 5, stored as `*/5 * * * *`). N must divide an hour
+  (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30) or be whole hours dividing a day (60 → `0 * * * *`, 120 → `0 */2 * * *`...).
+- `cron('0 6 * * *')`: any cron expression (here every day at 06:00; `0 6,18 * * 1-5` is 06:00 and 18:00 on weekdays).
+
+The expression is evaluated in `app.schedule_timezone` (or `app.timezone`), like the Laravel scheduler, and relies on
+`mail-listeners:poll` being scheduled every minute. A run missed while the scheduler was down is caught up on the next
+poll, and a new mailbox waits for its first run time. The last of `pollEvery()` / `cron()` called wins.
 
 Connector settings:
 
@@ -135,18 +156,7 @@ Connector settings:
 | `microsoft_graph` | `tenant` (a key of `microsoft_graph.tenants`, default `default`), `folder` (well-known name or id, default `inbox`)                                                 |
 | `imap`            | `host`, `port` (993), `encryption` (`ssl`, `tls`, `starttls`, `none`), `validate_cert` (true), `username`, `password`, `folder` (default `INBOX`)                  |
 
-Then read the mailboxes:
-
-```bash
-# Read the mailboxes now (also what the schedule runs every minute)
-php artisan mail-listeners:poll
-
-# Read a past period of a mailbox, firing the events of the emails not read yet
-php artisan mail-listeners:read invoices@example.com --from=01-10-2026 --to=07-10-2026
-
-# Sync the definitions with the database right away (e.g. on deploy) and list the invalid ones
-php artisan mail-listeners:sync
-```
+The scheduled `mail-listeners:poll` then reads them; see [Commands](#commands) to read a mailbox now or a past period.
 
 How it works:
 
@@ -172,11 +182,46 @@ MailAccount::create([
     'connector' => 'microsoft_graph',
     'connector_settings' => ['tenant' => 'default'],
     'events' => ['supplier'],
-    'poll_interval_minutes' => 5,
+    'poll_cron' => '*/5 * * * *',     // every 5 minutes (the default), or e.g. '0 6 * * *'
 ]);
 ```
 
-They are read by the same commands. Read one now with `php artisan mail-listeners:poll --account={id}`.
+They are read by the same [commands](#commands).
+
+## Commands
+
+Dates are `dd-mm-yyyy`, optionally with a time (`"dd-mm-yyyy HH:MM"`, quoted).
+
+| Command                                                                 | Does                                                                                   |
+|-------------------------------------------------------------------------|----------------------------------------------------------------------------------------|
+| `mail-listeners:install`                                                | Publishes the config and the service provider, and registers the provider             |
+| `mail-listeners:poll`                                                   | Queues the reading of the active mailboxes that are due (schedule it every minute)    |
+| `mail-listeners:poll --account={id}`                                    | Queues the reading of one active mailbox now, even when it is not due                 |
+| `mail-listeners:read {email} --from=dd-mm-yyyy --to=dd-mm-yyyy`         | Reads a mailbox within a period now and fires the events of the emails not read yet   |
+| `mail-listeners:sync`                                                   | Syncs the mailboxes defined in code with the database now and lists the invalid ones  |
+
+### Reading a period
+
+```bash
+# The whole of January: from 01-01-2026 00:00 to the end of 31-01-2026
+php artisan mail-listeners:read invoices@example.com --from=01-01-2026 --to=31-01-2026
+
+# With times
+php artisan mail-listeners:read invoices@example.com --from="01-01-2026 08:00" --to="01-01-2026 18:00"
+
+# The last 24 hours
+php artisan mail-listeners:read invoices@example.com
+```
+
+- `--from`: a day starts at 00:00. Default: 24 hours before the end.
+- `--to`: a day includes the whole day. Default: now.
+- Works with mailboxes defined in code (synced first when needed) and in the database; an inactive mailbox is read
+  anyway, with a warning.
+- The mailbox is read right away by the command; the listeners of the fired events run on the queue as usual.
+- Emails already read are skipped, so a period can be read again safely, and the polling cursor of the mailbox is left
+  untouched: the scheduled polling goes on as before. `mail-listeners:poll --account={id}` instead reads from the
+  cursor and moves it forward.
+- Prints how many emails were found, how many were new (events fired) and how many were already read.
 
 ## Logging
 

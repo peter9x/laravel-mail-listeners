@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Mupy\MailListeners;
 
+use Cron\CronExpression;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Validator;
@@ -154,7 +155,7 @@ final class MailboxRegistry
     }
 
     /**
-     * Validation errors of a definition: unknown connector, invalid settings, missing or unknown events.
+     * Validation errors of a definition: unknown connector, invalid settings, invalid cron, missing or unknown events.
      *
      * @return list<string>
      */
@@ -174,6 +175,10 @@ final class MailboxRegistry
             ['email' => $definition->email, ...$definition->settings()],
             ['email' => ['required', 'email', 'max:255'], ...$this->connectors->connectorClass($connector)::settingsRules(creating: true)],
         )->errors()->all();
+
+        if (! CronExpression::isValidExpression($definition->cronExpression())) {
+            $errors[] = "Invalid cron expression [{$definition->cronExpression()}].";
+        }
 
         if ($definition->eventList() === []) {
             $errors[] = 'No events configured.';

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Mupy\MailListeners;
 
 use Illuminate\Support\ServiceProvider;
+use Mupy\MailListeners\Console\InstallCommand;
 use Mupy\MailListeners\Console\PollCommand;
 use Mupy\MailListeners\Console\ReadCommand;
 use Mupy\MailListeners\Console\SyncCommand;
@@ -36,7 +37,12 @@ class MailListenersServiceProvider extends ServiceProvider
                 __DIR__.'/../config/mail-listeners.php' => config_path('mail-listeners.php'),
             ], 'mail-listeners-config');
 
+            $this->publishes([
+                __DIR__.'/../stubs/MailListenersServiceProvider.stub' => app_path('Providers/MailListenersServiceProvider.php'),
+            ], 'mail-listeners-provider');
+
             $this->commands([
+                InstallCommand::class,
                 PollCommand::class,
                 ReadCommand::class,
                 SyncCommand::class,

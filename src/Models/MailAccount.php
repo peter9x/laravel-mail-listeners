@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Mupy\MailListeners\Models;
 
 use Carbon\CarbonImmutable;
+use Cron\CronExpression;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\Factory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -25,7 +26,7 @@ use Mupy\MailListeners\Events\EmailReceived;
  * @property string $connector Key of a connector registered in the `mail-listeners.connectors` config
  * @property array<string, mixed>|null $connector_settings Connector specific settings (encrypted: may hold secrets)
  * @property list<string> $events Keys of events registered in the `mail-listeners.events` config, or event classes
- * @property int $poll_interval_minutes
+ * @property string $poll_cron Cron expression the account is polled on (in `app.schedule_timezone`, or `app.timezone`)
  * @property \Illuminate\Support\Carbon|null $read_from
  * @property bool $active
  * @property bool $managed Defined in code ({@see \Mupy\MailListeners\Facades\MailListeners::mailbox()}) and kept in sync by the package
@@ -52,7 +53,7 @@ class MailAccount extends Model
         'connector',
         'connector_settings',
         'events',
-        'poll_interval_minutes',
+        'poll_cron',
         'read_from',
         'active',
         'managed',
@@ -99,14 +100,21 @@ class MailAccount extends Model
         return $this->managed;
     }
 
+    /**
+     * Due once the last run time of `poll_cron` (e.g. today 06:00 for "0 6 * * *") is past the last poll, or past the
+     * creation of the account when never polled, so a run missed by the scheduler is caught up on the next poll.
+     * An invalid cron expression is never due.
+     */
     public function isDueForPolling(): bool
     {
-        if (! $this->active) {
+        if (! $this->active || ! CronExpression::isValidExpression($this->poll_cron)) {
             return false;
         }
 
-        return $this->last_polled_at === null
-            || $this->last_polled_at->copy()->addMinutes($this->poll_interval_minutes)->lessThanOrEqualTo(now());
+        $timezone = (string) (config('app.schedule_timezone') ?? config('app.timezone'));
+        $lastRun = (new CronExpression($this->poll_cron))->getPreviousRunDate(now($timezone), allowCurrentDate: true, timeZone: $timezone);
+
+        return $lastRun > ($this->last_polled_at ?? $this->created_at ?? now());
     }
 
     /**
@@ -163,7 +171,6 @@ class MailAccount extends Model
         return [
             'connector_settings' => 'encrypted:array',
             'events' => 'array',
-            'poll_interval_minutes' => 'integer',
             'read_from' => 'datetime',
             'active' => 'boolean',
             'managed' => 'boolean',

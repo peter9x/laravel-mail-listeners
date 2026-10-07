@@ -1,0 +1,44 @@
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Support\ServiceProvider;
+use Mupy\MailListeners\Facades\MailListeners;
+
+/**
+ * Mailboxes read by the mail listeners. The code is the source of truth: `mail-listeners:poll` keeps the
+ * `mail_listener_accounts` table in sync with these definitions (a mailbox removed from here is deactivated).
+ */
+class MailListenersServiceProvider extends ServiceProvider
+{
+    public function boot(): void
+    {
+        $this->mailboxes();
+    }
+
+    /**
+     * Define the mailboxes to read and the events fired for every new email (event classes extending
+     * Mupy\MailListeners\Events\EmailReceived, or keys of the `mail-listeners.events` config).
+     */
+    protected function mailboxes(): void
+    {
+        // Office 365: the tenant credentials come from `mail-listeners.microsoft_graph.tenants`.
+        // MailListeners::mailbox('invoices@example.com')
+        //     ->name('Invoices')
+        //     ->connector('microsoft_graph', ['tenant' => 'default', 'folder' => 'inbox'])
+        //     ->events(\App\Events\SupplierEmailReceived::class)
+        //     ->pollEvery(5);
+
+        // IMAP: user and password.
+        // MailListeners::mailbox('hr@example.com')
+        //     ->connector('imap', [
+        //         'host' => 'imap.example.com',
+        //         'port' => 993,
+        //         'encryption' => 'ssl',
+        //         'username' => 'hr@example.com',
+        //         'password' => env('MAIL_HR_PASSWORD'),
+        //     ])
+        //     ->events(\App\Events\HrEmailReceived::class)
+        //     ->cron('0 6 * * *');
+    }
+}
