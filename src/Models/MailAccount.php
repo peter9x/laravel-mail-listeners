@@ -24,10 +24,11 @@ use Mupy\MailListeners\Events\EmailReceived;
  * @property string $email
  * @property string $connector Key of a connector registered in the `mail-listeners.connectors` config
  * @property array<string, mixed>|null $connector_settings Connector specific settings (encrypted: may hold secrets)
- * @property list<string> $events Keys of events registered in the `mail-listeners.events` config
+ * @property list<string> $events Keys of events registered in the `mail-listeners.events` config, or event classes
  * @property int $poll_interval_minutes
  * @property \Illuminate\Support\Carbon|null $read_from
  * @property bool $active
+ * @property bool $managed Defined in code ({@see \Mupy\MailListeners\Facades\MailListeners::mailbox()}) and kept in sync by the package
  * @property \Illuminate\Support\Carbon|null $last_polled_at
  * @property \Illuminate\Support\Carbon|null $last_received_at
  * @property string|null $last_error
@@ -54,6 +55,7 @@ class MailAccount extends Model
         'poll_interval_minutes',
         'read_from',
         'active',
+        'managed',
         'last_polled_at',
         'last_received_at',
         'last_error',
@@ -89,6 +91,14 @@ class MailAccount extends Model
         return app(ConnectorManager::class)->connectorClass($this->connector);
     }
 
+    /**
+     * Whether the account is defined in code: its settings are overwritten on every sync, so UIs should not edit it.
+     */
+    public function isManaged(): bool
+    {
+        return $this->managed;
+    }
+
     public function isDueForPolling(): bool
     {
         if (! $this->active) {
@@ -112,7 +122,7 @@ class MailAccount extends Model
     }
 
     /**
-     * Configured events that are registered (unknown keys are ignored).
+     * Configured events that resolve to an event class: registered keys or event classes (unknown values are ignored).
      *
      * @return list<string>
      */
@@ -120,7 +130,7 @@ class MailAccount extends Model
     {
         $registry = app(EventRegistry::class);
 
-        return array_values(array_filter($this->events ?? [], fn (string $event): bool => $registry->has($event)));
+        return array_values(array_filter($this->events ?? [], fn (string $event): bool => $registry->resolve($event) !== null));
     }
 
     /**
@@ -130,7 +140,7 @@ class MailAccount extends Model
     {
         $registry = app(EventRegistry::class);
 
-        return array_map(fn (string $event): string => (string) $registry->eventClass($event), $this->eventKeys());
+        return array_values(array_unique(array_map(fn (string $event): string => (string) $registry->resolve($event), $this->eventKeys())));
     }
 
     public function connectorSetting(string $key, ?string $default = null): ?string
@@ -156,6 +166,7 @@ class MailAccount extends Model
             'poll_interval_minutes' => 'integer',
             'read_from' => 'datetime',
             'active' => 'boolean',
+            'managed' => 'boolean',
             'last_polled_at' => 'datetime',
             'last_received_at' => 'datetime',
             'last_error_at' => 'datetime',

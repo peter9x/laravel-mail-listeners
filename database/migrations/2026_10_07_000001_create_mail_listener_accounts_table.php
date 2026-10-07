@@ -24,6 +24,8 @@ return new class extends Migration
             $table->unsignedSmallInteger('poll_interval_minutes')->default(5);
             $table->timestampTz('read_from')->nullable();
             $table->boolean('active')->default(true)->index();
+            // Defined in code (MailListeners::mailbox()) and kept in sync by the package.
+            $table->boolean('managed')->default(false)->index();
             $table->timestampTz('last_polled_at')->nullable();
             $table->timestampTz('last_received_at')->nullable();
             $table->text('last_error')->nullable();

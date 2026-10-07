@@ -44,6 +44,16 @@ final class EventRegistry
         return $this->all()[$key]['class'] ?? null;
     }
 
+    /**
+     * Event class of a registered key, or the value itself when it is an event class (extending EmailReceived).
+     *
+     * @return class-string<EmailReceived>|null
+     */
+    public function resolve(string $event): ?string
+    {
+        return $this->eventClass($event) ?? (is_subclass_of($event, EmailReceived::class) ? $event : null);
+    }
+
     public function label(string $key): string
     {
         return __($this->all()[$key]['label'] ?? $key);

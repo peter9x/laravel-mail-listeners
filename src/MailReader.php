@@ -5,11 +5,11 @@ declare(strict_types=1);
 namespace Mupy\MailListeners;
 
 use Carbon\CarbonImmutable;
-use Illuminate\Support\Facades\Log;
 use Mupy\MailListeners\Data\InboundEmail;
 use Mupy\MailListeners\Enums\MessageStatus;
 use Mupy\MailListeners\Models\MailAccount;
 use Mupy\MailListeners\Models\MailMessage;
+use Mupy\MailListeners\Support\MailListenersLog;
 use Throwable;
 
 /**
@@ -51,7 +51,7 @@ final class MailReader
                 'last_error_at' => now(),
             ]);
 
-            Log::error('Mail listeners: failed to read the account.', [
+            MailListenersLog::channel()->error('Mail listeners: failed to read the account.', [
                 'account' => $account->id,
                 'email' => $account->email,
                 'error' => $exception->getMessage(),
@@ -66,6 +66,14 @@ final class MailReader
             'last_error' => null,
             'last_error_at' => null,
         ]);
+
+        if ($newMessages > 0) {
+            MailListenersLog::channel()->info('Mail listeners: new emails read.', [
+                'account' => $account->id,
+                'email' => $account->email,
+                'count' => $newMessages,
+            ]);
+        }
 
         return $newMessages;
     }
@@ -171,7 +179,7 @@ final class MailReader
             } catch (Throwable $exception) {
                 $errors[] = class_basename($eventClass).': '.$exception->getMessage();
 
-                Log::error('Mail listeners: failed to dispatch an event.', [
+                MailListenersLog::channel()->error('Mail listeners: failed to dispatch an event.', [
                     'account' => $account->id,
                     'message' => $message->id,
                     'event' => $eventClass,

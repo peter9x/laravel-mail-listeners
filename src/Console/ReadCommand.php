@@ -7,6 +7,8 @@ namespace Mupy\MailListeners\Console;
 use Carbon\CarbonImmutable;
 use Illuminate\Console\Command;
 use InvalidArgumentException;
+use Mupy\MailListeners\Console\Concerns\ReportsMailboxSync;
+use Mupy\MailListeners\MailboxRegistry;
 use Mupy\MailListeners\MailReader;
 use Mupy\MailListeners\Models\MailAccount;
 use Throwable;
@@ -17,17 +19,28 @@ use Throwable;
  */
 final class ReadCommand extends Command
 {
+    use ReportsMailboxSync;
+
     protected $signature = 'mail-listeners:read
-        {email : Email of a configured mail account}
+        {email : Email of a mail account (in the database or defined in code)}
         {--from= : Start of the period (e.g. 01-01-2026 or "01-01-2026 08:00"). Default: 24h before the end}
         {--to= : End of the period (e.g. 31-01-2026, the whole day, or "31-01-2026 18:00"). Default: now}';
 
     protected $description = 'Read the emails of a configured mail account within a period and fire the events of the ones not read yet';
 
-    public function handle(MailReader $reader): int
+    public function handle(MailReader $reader, MailboxRegistry $mailboxes): int
     {
         $email = mb_strtolower(mb_trim((string) $this->argument('email')));
+
+        $this->reportSyncErrors($mailboxes->syncIfChanged());
+
         $account = MailAccount::query()->where('email', $email)->first();
+
+        if (! $account instanceof MailAccount && $mailboxes->has($email)) {
+            $this->reportSyncErrors($mailboxes->sync());
+
+            $account = MailAccount::query()->where('email', $email)->first();
+        }
 
         if (! $account instanceof MailAccount) {
             $this->error("The mail account {$email} is not configured.");

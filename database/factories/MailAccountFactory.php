@@ -28,6 +28,7 @@ class MailAccountFactory extends Factory
             'poll_interval_minutes' => 5,
             'read_from' => now()->subDay(),
             'active' => true,
+            'managed' => false,
         ];
     }
 
@@ -51,8 +52,13 @@ class MailAccountFactory extends Factory
         return $this->state(fn (): array => ['active' => false]);
     }
 
+    public function managed(): static
+    {
+        return $this->state(fn (): array => ['managed' => true]);
+    }
+
     /**
-     * @param  list<string>  $events  keys of events registered in the `mail-listeners.events` config
+     * @param  list<string>  $events  keys of events registered in the `mail-listeners.events` config, or event classes
      */
     public function withEvents(array $events): static
     {

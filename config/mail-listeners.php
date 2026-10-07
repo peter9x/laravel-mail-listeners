@@ -27,7 +27,7 @@ return [
     |--------------------------------------------------------------------------
     |
     | Events an account can fire for every new email, keyed by the value stored
-    | on the account. Each class must extend Mupy\MailListeners\Events\EmailReceived;
+    | on the account (accounts may also store event classes directly). Each class must extend Mupy\MailListeners\Events\EmailReceived;
     | your modules then listen to them with listeners extending
     | Mupy\MailListeners\MailListener.
     |
@@ -68,6 +68,23 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Logging
+    |--------------------------------------------------------------------------
+    |
+    | `channel`: log channel of the package. By default its own `mail-listeners`
+    | channel (storage/logs/mail-listeners-*.log), registered with `level` and
+    | `days` unless your config/logging.php defines it. Set any other channel
+    | (e.g. "stack") to log with the rest of your app.
+    |
+    */
+    'logging' => [
+        'channel' => env('MAIL_LISTENERS_LOG_CHANNEL', 'mail-listeners'),
+        'level' => env('MAIL_LISTENERS_LOG_LEVEL', 'debug'),
+        'days' => 14,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Queues
     |--------------------------------------------------------------------------
     |
@@ -89,12 +106,6 @@ return [
     | Days the read emails (metadata only) are kept, pruned with `php artisan model:prune`.
     */
     'retention_days' => 180,
-
-    /*
-    | Whether the package migrations run from the package. Set it to false after publishing them
-    | (`php artisan vendor:publish --tag=mail-listeners-migrations`) to run your published copies instead.
-    */
-    'run_migrations' => true,
 
     /*
     | Seconds a listener run stays locked, so an email is never processed twice concurrently by a listener.

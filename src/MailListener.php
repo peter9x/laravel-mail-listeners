@@ -11,6 +11,7 @@ use Mupy\MailListeners\Data\InboundEmail;
 use Mupy\MailListeners\Enums\ListenerRunStatus;
 use Mupy\MailListeners\Events\EmailReceived;
 use Mupy\MailListeners\Models\MailListenerRun;
+use Mupy\MailListeners\Support\MailListenersLog;
 use Throwable;
 
 /**
@@ -154,6 +155,13 @@ abstract class MailListener implements ShouldQueue
             'status' => ListenerRunStatus::FAILED,
             'error' => mb_substr($exception::class.': '.$exception->getMessage(), 0, 5000),
             'finished_at' => now(),
+        ]);
+
+        MailListenersLog::channel()->error('Mail listeners: a listener failed to process an email.', [
+            'listener' => static::class,
+            'message' => $run->mail_message_id,
+            'attempts' => $run->attempts,
+            'error' => $exception->getMessage(),
         ]);
     }
 }
