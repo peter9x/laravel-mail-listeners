@@ -123,6 +123,20 @@ it('defaults to the inbox of the default tenant', function (): void {
     app(MicrosoftGraphConnector::class)->eachMessageBetween($account, CarbonImmutable::now()->subHour(), CarbonImmutable::now(), fn () => null);
 });
 
+it('reads every folder of the mailbox when the folder is "*"', function (): void {
+    $account = MailAccount::factory()->create(['connector_settings' => ['folder' => MicrosoftGraphConnector::ALL_FOLDERS]]);
+
+    $this->mock(GraphMailClient::class, function (MockInterface $mock): void {
+        $mock->shouldReceive('auth')->twice()->andReturnSelf();
+        $mock->shouldReceive('eachMessageReceivedBetween')
+            ->twice()
+            ->withArgs(fn (...$arguments): bool => $arguments[5] === null);
+    });
+
+    app(MicrosoftGraphConnector::class)->eachMessageBetween($account, CarbonImmutable::now()->subHour(), CarbonImmutable::now(), fn () => null);
+    app(MicrosoftGraphConnector::class)->testConnection($account);
+});
+
 it('downloads the file attachments of a message, decoded', function (): void {
     $account = MailAccount::factory()->create();
     $attachment = new FileAttachment();

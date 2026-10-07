@@ -153,7 +153,7 @@ Connector settings:
 
 | Connector         | Settings                                                                                                                                                          |
 |-------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `microsoft_graph` | `tenant` (a key of `microsoft_graph.tenants`, default `default`), `folder` (well-known name or id, default `inbox`)                                                 |
+| `microsoft_graph` | `tenant` (a key of `microsoft_graph.tenants`, default `default`), `folder` (well-known name or id, default `inbox`; `*` = all folders)                                          |
 | `imap`            | `host`, `port` (993), `encryption` (`ssl`, `tls`, `starttls`, `none`), `validate_cert` (true), `username`, `password`, `folder` (default `INBOX`)                  |
 
 The scheduled `mail-listeners:poll` then reads them; see [Commands](#commands) to read a mailbox now or a past period.

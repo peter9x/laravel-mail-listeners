@@ -21,10 +21,16 @@ use Mupy\MailListeners\Models\MailAccount;
  * Reads an Office 365 mailbox through Microsoft Graph with application credentials (Mail.Read).
  *
  * Connector settings: `tenant` (a tenant of `mail-listeners.microsoft_graph.tenants`, default
- * `mail-listeners.microsoft_graph.default_tenant`) and `folder` (well-known folder name or id, default "inbox").
+ * `mail-listeners.microsoft_graph.default_tenant`) and `folder` (well-known folder name or id, default "inbox";
+ * `*` reads every folder of the mailbox).
  */
 final readonly class MicrosoftGraphConnector implements MailConnector
 {
+    /**
+     * `folder` value that reads the messages of every folder (Graph `/users/{id}/messages`).
+     */
+    public const string ALL_FOLDERS = '*';
+
     /**
      * @var list<string>
      */
@@ -106,7 +112,7 @@ final readonly class MicrosoftGraphConnector implements MailConnector
                 $callback($this->toInboundEmail($account, $message));
             },
             select: self::MESSAGE_SELECT,
-            mailFolder: $account->connectorSetting('folder', self::defaultFolder()),
+            mailFolder: $this->mailFolder($account),
             expand: self::MESSAGE_EXPAND,
         ));
     }
@@ -141,7 +147,7 @@ final readonly class MicrosoftGraphConnector implements MailConnector
             CarbonImmutable::now(),
             fn (): bool => false,
             select: ['id'],
-            mailFolder: $account->connectorSetting('folder', self::defaultFolder()),
+            mailFolder: $this->mailFolder($account),
         ));
     }
 
@@ -167,6 +173,16 @@ final readonly class MicrosoftGraphConnector implements MailConnector
     private function client(MailAccount $account): GraphMailClient
     {
         return $this->graph->auth($account->connectorSetting('tenant', self::defaultTenant()));
+    }
+
+    /**
+     * Folder to read, or null for every folder of the mailbox.
+     */
+    private function mailFolder(MailAccount $account): ?string
+    {
+        $folder = $account->connectorSetting('folder', self::defaultFolder());
+
+        return $folder === self::ALL_FOLDERS ? null : $folder;
     }
 
     private function toInboundEmail(MailAccount $account, Message $message): InboundEmail
