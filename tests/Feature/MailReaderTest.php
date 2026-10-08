@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Event;
+use Mupy\MailListeners\Data\InboundEmail;
 use Mupy\MailListeners\Enums\ListenerRunStatus;
 use Mupy\MailListeners\Enums\MessageStatus;
 use Mupy\MailListeners\Jobs\PollMailAccount;
@@ -171,4 +172,48 @@ it('fires the account events for a given email, recording it when new and even w
         ->and(MailMessage::query()->count())->toBe(1);
     Event::assertDispatchedTimes(SupplierEmailReceived::class, 2);
     Event::assertDispatched(SupplierEmailReceived::class, fn (SupplierEmailReceived $event): bool => $event->email->messageId === $first->id);
+});
+
+it('reports each email read within a period, with the counters so far', function (): void {
+    Event::fake([SupplierEmailReceived::class]);
+    $account = MailAccount::factory()->withEvents(['supplier'])->create();
+    $alreadyRead = FakeConnector::makeEmail($account, ['subject' => 'Já lido', 'receivedAt' => CarbonImmutable::parse('2026-01-02 10:00')]);
+    $this->connector->messages = [
+        FakeConnector::makeEmail($account, ['subject' => 'Primeiro', 'receivedAt' => CarbonImmutable::parse('2026-01-01 10:00')]),
+        $alreadyRead,
+        FakeConnector::makeEmail($account, ['subject' => 'Terceiro', 'receivedAt' => CarbonImmutable::parse('2026-01-03 10:00')]),
+    ];
+    MailMessage::factory()->for($account, 'account')->create(['dedup_key' => $alreadyRead->dedupKey()]);
+    $calls = [];
+
+    $result = app(MailReader::class)->readBetween(
+        $account,
+        CarbonImmutable::parse('2026-01-01'),
+        CarbonImmutable::parse('2026-02-01'),
+        function (InboundEmail $email, bool $isNew, array $result) use (&$calls): void {
+            $calls[] = [$email->subject, $isNew, $result];
+        },
+    );
+
+    expect($calls)->toBe([
+        ['Primeiro', true, ['found' => 1, 'new' => 1]],
+        ['Já lido', false, ['found' => 2, 'new' => 1]],
+        ['Terceiro', true, ['found' => 3, 'new' => 2]],
+    ])->and($result)->toBe(['found' => 3, 'new' => 2]);
+    Event::assertDispatchedTimes(SupplierEmailReceived::class, 2);
+});
+
+it('reads a period the same way without a callback', function (): void {
+    Event::fake([SupplierEmailReceived::class]);
+    $account = MailAccount::factory()->withEvents(['supplier'])->create();
+    $this->connector->messages = [
+        FakeConnector::makeEmail($account, ['receivedAt' => CarbonImmutable::parse('2026-01-01 10:00')]),
+        FakeConnector::makeEmail($account, ['receivedAt' => CarbonImmutable::parse('2026-01-02 10:00')]),
+    ];
+
+    $result = app(MailReader::class)->readBetween($account, CarbonImmutable::parse('2026-01-01'), CarbonImmutable::parse('2026-02-01'));
+
+    expect($result)->toBe(['found' => 2, 'new' => 2])
+        ->and(MailMessage::query()->count())->toBe(2);
+    Event::assertDispatchedTimes(SupplierEmailReceived::class, 2);
 });

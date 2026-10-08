@@ -81,10 +81,12 @@ final class MailReader
     /**
      * Read the emails received within [$from, $to[ (e.g. to recover a past period), firing the events of the new ones.
      * Emails already read are skipped, and the polling cursor of the account is left untouched.
+     * $onEmail is called after each email is recorded (and its events fired), with the counters so far.
      *
+     * @param  (callable(InboundEmail $email, bool $isNew, array{found: int, new: int} $result): void)|null  $onEmail
      * @return array{found: int, new: int}
      */
-    public function readBetween(MailAccount $account, CarbonImmutable $from, CarbonImmutable $to): array
+    public function readBetween(MailAccount $account, CarbonImmutable $from, CarbonImmutable $to, ?callable $onEmail = null): array
     {
         $result = ['found' => 0, 'new' => 0];
 
@@ -92,11 +94,17 @@ final class MailReader
             $account,
             $from,
             $to,
-            function (InboundEmail $email) use ($account, &$result): void {
+            function (InboundEmail $email) use ($account, $onEmail, &$result): void {
                 $result['found']++;
 
-                if ($this->record($account, $email)) {
+                $isNew = $this->record($account, $email);
+
+                if ($isNew) {
                     $result['new']++;
+                }
+
+                if ($onEmail !== null) {
+                    $onEmail($email, $isNew, $result);
                 }
             },
         );

@@ -44,6 +44,11 @@ class FakeConnector implements MailConnector
     public ?Throwable $failWith = null;
 
     /**
+     * When set, reading fails right after delivering this many messages (with failWith, or a lost connection).
+     */
+    public ?int $failAfter = null;
+
+    /**
      * Bind a new fake in place of the connector registered under the given key.
      */
     public static function swap(string $connector = 'microsoft_graph'): self
@@ -119,10 +124,16 @@ class FakeConnector implements MailConnector
     public function eachMessageBetween(MailAccount $account, CarbonImmutable $from, CarbonImmutable $to, callable $callback): void
     {
         $this->rangesRequested[] = [$from, $to];
+        $delivered = 0;
 
         foreach ($this->messages as $message) {
             if ($message->accountId === $account->id && $message->receivedAt->greaterThanOrEqualTo($from) && $message->receivedAt->lessThan($to)) {
+                if ($this->failAfter !== null && $delivered >= $this->failAfter) {
+                    throw $this->failWith ?? new RuntimeException('Connection lost');
+                }
+
                 $callback($message);
+                $delivered++;
             }
         }
 

@@ -223,6 +223,37 @@ php artisan mail-listeners:read invoices@example.com
   cursor and moves it forward.
 - Prints how many emails were found, how many were new (events fired) and how many were already read.
 
+#### Progress
+
+The number of emails in the period is only known at the end, so the progress is a counter, not a percentage:
+
+```
+Reading invoices@example.com from 01-01-2026 00:00 to 01-10-2026 00:00...
+Connecting to invoices@example.com and searching messages...
+  137 emails [new: 12 | already read: 125] 00:42 18 MiB — 14-03-2026 09:12 Extracto Via Verde...
+```
+
+- "Connecting…" shows up right away: the first batch of a large IMAP mailbox can take a while.
+- The counter then shows the emails found so far (new / already read), elapsed time, memory, and the received date
+  and subject of the current email.
+- With `-v`, each new email is also listed (received date, sender, subject) above the counter.
+- Without an interactive terminal (cron, `> read.log`, `--no-ansi`) there is no counter. Instead, a plain line is
+  written every 25 emails and once at the end, e.g. `[00:42] 125 emails read (12 new)...`.
+
+#### Resuming after a failure
+
+If the mailbox fails partway (e.g. the connection drops), the command exits with a failure and shows how far it got:
+
+```
+The mail account could not be read: Connection lost
+Read before the failure: 137 emails found, 12 new (events fired), 125 already read.
+Last email processed: received at 14-03-2026 09:12.
+Resume with: php artisan mail-listeners:read invoices@example.com --from="14-03-2026 09:12" --to="01-10-2026 00:00"
+```
+
+Run the `Resume with:` command to carry on from the last email processed. This is safe: the emails already read are
+skipped, so none of their events fire twice.
+
 ## Logging
 
 The package logs to its own `mail-listeners` channel (`storage/logs/mail-listeners-*.log`, daily, 14 days), registered
