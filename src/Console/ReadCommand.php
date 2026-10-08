@@ -6,11 +6,14 @@ namespace Mupy\MailListeners\Console;
 
 use Carbon\CarbonImmutable;
 use Illuminate\Console\Command;
+use Illuminate\Support\Str;
 use InvalidArgumentException;
 use Mupy\MailListeners\Console\Concerns\ReportsMailboxSync;
+use Mupy\MailListeners\Data\InboundEmail;
 use Mupy\MailListeners\MailboxRegistry;
 use Mupy\MailListeners\MailReader;
 use Mupy\MailListeners\Models\MailAccount;
+use Symfony\Component\Console\Helper\ProgressBar;
 use Throwable;
 
 /**
@@ -20,6 +23,11 @@ use Throwable;
 final class ReadCommand extends Command
 {
     use ReportsMailboxSync;
+
+    /**
+     * Without an interactive terminal (cron, a log file, --no-ansi) a plain line is written every this many emails.
+     */
+    private const int PLAIN_PROGRESS_EVERY = 25;
 
     protected $signature = 'mail-listeners:read
         {email : Email of a mail account (in the database or defined in code)}
@@ -68,14 +76,59 @@ final class ReadCommand extends Command
         }
 
         $this->info("Reading {$account->email} from {$from->format('d-m-Y H:i')} to {$to->format('d-m-Y H:i')}...");
+        $this->line("Connecting to {$account->email} and searching messages...");
+
+        $startedAt = microtime(true);
+        $progress = ['found' => 0, 'new' => 0];
+        $lastReceivedAt = null;
+        $bar = $this->output->isDecorated() ? $this->progressBar($startedAt, $progress) : null;
+
+        $onEmail = function (InboundEmail $email, bool $isNew, array $result) use ($bar, $startedAt, &$progress, &$lastReceivedAt): void {
+            $progress = $result;
+            $lastReceivedAt = $email->receivedAt;
+
+            if ($bar instanceof ProgressBar) {
+                $bar->setMessage($email->receivedAt->format('d-m-Y H:i').' '.Str::limit($email->subjectDecoded, 60));
+                $bar->advance();
+            }
+
+            if ($isNew && $this->output->isVerbose()) {
+                $bar?->clear();
+                $this->line(sprintf('  + %s  %s  %s', $email->receivedAt->format('d-m-Y H:i'), $email->fromEmail ?? '-', $email->subjectDecoded));
+                $bar?->display();
+            }
+
+            if (! $bar instanceof ProgressBar && $result['found'] % self::PLAIN_PROGRESS_EVERY === 0) {
+                $this->line(sprintf('[%s] %d emails read (%d new)...', $this->elapsed($startedAt), $result['found'], $result['new']));
+            }
+        };
 
         try {
-            $result = $reader->readBetween($account, $from, $to);
+            $result = $reader->readBetween($account, $from, $to, $onEmail);
         } catch (Throwable $exception) {
+            $this->finishProgress($bar, $startedAt, $progress);
             $this->error("The mail account could not be read: {$exception->getMessage()}");
+
+            if ($progress['found'] > 0 && $lastReceivedAt instanceof CarbonImmutable) {
+                $this->warn(sprintf(
+                    'Read before the failure: %d emails found, %d new (events fired), %d already read.',
+                    $progress['found'],
+                    $progress['new'],
+                    $progress['found'] - $progress['new'],
+                ));
+                $this->line("Last email processed: received at {$lastReceivedAt->format('d-m-Y H:i')}.");
+                $this->line(sprintf(
+                    'Resume with: php artisan mail-listeners:read %s --from="%s" --to="%s"',
+                    $account->email,
+                    $lastReceivedAt->format('d-m-Y H:i'),
+                    ($to->second > 0 || $to->microsecond > 0 ? $to->startOfMinute()->addMinute() : $to)->format('d-m-Y H:i'),
+                ));
+            }
 
             return self::FAILURE;
         }
+
+        $this->finishProgress($bar, $startedAt, $result);
 
         $this->info(sprintf(
             '%d emails found: %d new (events fired), %d already read.',
@@ -85,6 +138,54 @@ final class ReadCommand extends Command
         ));
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Counter without a maximum: the number of emails in the period is only known once they are all read.
+     *
+     * @param  array{found: int, new: int}  $progress  updated by reference while reading
+     */
+    private function progressBar(float $startedAt, array &$progress): ProgressBar
+    {
+        $bar = $this->output->createProgressBar();
+
+        $bar->setPlaceholderFormatter('new', function () use (&$progress): string {
+            return (string) $progress['new'];
+        });
+        $bar->setPlaceholderFormatter('read', function () use (&$progress): string {
+            return (string) ($progress['found'] - $progress['new']);
+        });
+        $bar->setPlaceholderFormatter('clock', fn (): string => $this->elapsed($startedAt));
+        $bar->setFormat('  %current% emails [new: %new% | already read: %read%] %clock% %memory:6s% — %message%');
+        $bar->setMessage('');
+
+        return $bar;
+    }
+
+    /**
+     * @param  array{found: int, new: int}  $progress
+     */
+    private function finishProgress(?ProgressBar $bar, float $startedAt, array $progress): void
+    {
+        if ($bar instanceof ProgressBar) {
+            if ($progress['found'] > 0) {
+                $bar->finish();
+                $this->newLine();
+            }
+
+            return;
+        }
+
+        if ($progress['found'] > 0) {
+            $this->line(sprintf('[%s] %d emails read (%d new).', $this->elapsed($startedAt), $progress['found'], $progress['new']));
+        }
+    }
+
+    private function elapsed(float $startedAt): string
+    {
+        $seconds = (int) (microtime(true) - $startedAt);
+
+        return sprintf('%02d:%02d', intdiv($seconds, 60), $seconds % 60);
     }
 
     /**
