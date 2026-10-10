@@ -68,16 +68,16 @@ function graphFileAttachment(string $name, string $contentType, bool $isInline =
     return $attachment;
 }
 
-it('reads the configured folder and tenant within the given period, maps the messages and skips drafts', function (): void {
+it('reads the configured folder and connection within the given period, maps the messages and skips drafts', function (): void {
     $account = MailAccount::factory()->create([
         'email' => 'fornecedores@onevetgroup.pt',
-        'connector_settings' => ['tenant' => 'other', 'folder' => 'Faturas'],
+        'connector_settings' => ['connection' => 'other', 'folder' => 'Faturas'],
     ]);
     $from = CarbonImmutable::parse('2026-10-06 09:00:00');
     $to = CarbonImmutable::parse('2026-10-06 11:00:00');
 
     $this->mock(GraphMailClient::class, function (MockInterface $mock) use ($from, $to): void {
-        $mock->shouldReceive('auth')->once()->with('other')->andReturnSelf();
+        $mock->shouldReceive('auth')->once()->with(['tenant' => 'other-tenant-id', 'client_id' => 'other-client-id', 'client_secret' => 'other-secret'], 'other')->andReturnSelf();
         $mock->shouldReceive('eachMessageReceivedBetween')
             ->once()
             ->withArgs(fn (string $mailbox, DateTimeInterface $readFrom, DateTimeInterface $readTo, callable $callback, array $select, ?string $mailFolder, array $expand): bool => $mailbox === 'fornecedores@onevetgroup.pt'
@@ -110,11 +110,11 @@ it('reads the configured folder and tenant within the given period, maps the mes
         ->and($emails[0]->hasAttachments)->toBeTrue();
 });
 
-it('defaults to the inbox of the default tenant', function (): void {
+it('defaults to the inbox of the default connection', function (): void {
     $account = MailAccount::factory()->create(['connector_settings' => null]);
 
     $this->mock(GraphMailClient::class, function (MockInterface $mock): void {
-        $mock->shouldReceive('auth')->once()->with('default')->andReturnSelf();
+        $mock->shouldReceive('auth')->once()->with(['tenant' => 'tenant-id', 'client_id' => 'client-id', 'client_secret' => 'secret'], 'default')->andReturnSelf();
         $mock->shouldReceive('eachMessageReceivedBetween')
             ->once()
             ->withArgs(fn (...$arguments): bool => $arguments[5] === 'inbox');
@@ -229,10 +229,41 @@ it('marks the inline attachments it downloads', function (): void {
     expect(app(MicrosoftGraphConnector::class)->attachments($account, 'm-1')[0]->isInline)->toBeTrue();
 });
 
-it('lists the configured tenants and requires a known one', function (): void {
-    expect(MicrosoftGraphConnector::tenants())->toBe(['default', 'other'])
-        ->and(MicrosoftGraphConnector::defaultSettings())->toBe(['tenant' => 'default', 'folder' => null]);
+it('lists the configured connections and requires a known one', function (): void {
+    expect(MicrosoftGraphConnector::connections())->toBe(['default', 'other'])
+        ->and(MicrosoftGraphConnector::defaultSettings())->toBe(['connection' => 'default', 'folder' => null])
+        ->and(validator(['connection' => 'unknown'], MicrosoftGraphConnector::settingsRules(creating: true))->fails())->toBeTrue()
+        ->and(validator(['connection' => 'other'], MicrosoftGraphConnector::settingsRules(creating: true))->fails())->toBeFalse();
 
-    expect(fn () => (new GraphMailClient())->auth('unknown'))
-        ->toThrow(ConnectorException::class, 'The Microsoft Graph tenant unknown is not configured.');
+    expect(fn () => (new GraphMailClient())->auth(null, 'unknown'))
+        ->toThrow(ConnectorException::class, 'The Microsoft Graph connection unknown is not configured.')
+        ->and(fn () => (new GraphMailClient())->auth(['tenant' => 'tenant-id', 'client_id' => 'client-id'], 'partial'))
+        ->toThrow(ConnectorException::class, 'The Microsoft Graph connection partial is not configured.');
+});
+
+it('resolves the credentials in code, falling back to the config when the resolver returns null', function (): void {
+    $account = MailAccount::factory()->create(['connector_settings' => ['connection' => 'from-table']]);
+    $configured = MailAccount::factory()->create(['connector_settings' => ['connection' => 'other']]);
+
+    MicrosoftGraphConnector::resolveCredentialsUsing(fn (string $connection, MailAccount $forAccount): ?array => $connection === 'from-table'
+        ? ['tenant' => 'table-tenant', 'client_id' => 'table-client', 'client_secret' => 'table-secret-'.$forAccount->id]
+        : null);
+
+    expect(MicrosoftGraphConnector::credentials('from-table', $account))
+        ->toBe(['tenant' => 'table-tenant', 'client_id' => 'table-client', 'client_secret' => 'table-secret-'.$account->id])
+        ->and(MicrosoftGraphConnector::credentials('other', $configured))
+        ->toBe(['tenant' => 'other-tenant-id', 'client_id' => 'other-client-id', 'client_secret' => 'other-secret'])
+        ->and(MicrosoftGraphConnector::credentials('unknown', $configured))->toBeNull()
+        // Connections resolved in code cannot be listed, so any connection name is accepted.
+        ->and(validator(['connection' => 'from-table'], MicrosoftGraphConnector::settingsRules(creating: true))->fails())->toBeFalse();
+
+    $this->mock(GraphMailClient::class, function (MockInterface $mock) use ($account): void {
+        $mock->shouldReceive('auth')
+            ->once()
+            ->with(['tenant' => 'table-tenant', 'client_id' => 'table-client', 'client_secret' => 'table-secret-'.$account->id], 'from-table')
+            ->andReturnSelf();
+        $mock->shouldReceive('eachMessageReceivedBetween')->once();
+    });
+
+    app(MicrosoftGraphConnector::class)->eachMessageBetween($account, CarbonImmutable::now()->subHour(), CarbonImmutable::now(), fn () => null);
 });

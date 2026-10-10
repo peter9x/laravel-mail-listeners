@@ -12,6 +12,8 @@ use Mupy\MailListeners\Enums\ListenerRunStatus;
 use Mupy\MailListeners\Events\EmailReceived;
 use Mupy\MailListeners\Models\MailListenerRun;
 use Mupy\MailListeners\Support\MailListenersLog;
+use Mupy\MailListeners\Tenancy\Tenancy;
+use Mupy\MailListeners\Tenancy\TenantColumn;
 use Throwable;
 
 /**
@@ -21,6 +23,7 @@ use Throwable;
  * Each listener runs in its own queued job, so a slow or failing listener never delays the others.
  * A run is recorded only when the listener is interested in the email, and an email already processed
  * by a listener is never processed again by it (even when it listens to several events of the same account).
+ * With multi-tenancy, the listener runs in the context of the tenant of the email.
  */
 abstract class MailListener implements ShouldQueue
 {
@@ -73,8 +76,40 @@ abstract class MailListener implements ShouldQueue
 
     final public function handle(EmailReceived $event): void
     {
-        $email = $event->email;
+        app(Tenancy::class)->run($event->email->tenantId, fn () => $this->handleInTenant($event->email));
+    }
 
+    /**
+     * Called by the queue once all attempts are exhausted (also on timeouts, where handle() could not record it).
+     */
+    final public function failed(EmailReceived $event, Throwable $exception): void
+    {
+        if ($event->email->messageId === null) {
+            return;
+        }
+
+        app(Tenancy::class)->run($event->email->tenantId, function () use ($event, $exception): void {
+            $run = MailListenerRun::query()
+                ->where('mail_message_id', $event->email->messageId)
+                ->where('listener', static::class)
+                ->first();
+
+            if ($run instanceof MailListenerRun && $run->status !== ListenerRunStatus::PROCESSED) {
+                $this->markFailed($run, $exception);
+            }
+        });
+    }
+
+    /**
+     * @return list<string>
+     */
+    final public function tags(): array
+    {
+        return ['MailListeners', class_basename(static::class)];
+    }
+
+    private function handleInTenant(InboundEmail $email): void
+    {
         if ($email->messageId === null || ! $this->interestedIn($email)) {
             return;
         }
@@ -90,7 +125,7 @@ abstract class MailListener implements ShouldQueue
         try {
             $run = MailListenerRun::query()->firstOrCreate(
                 ['mail_message_id' => $email->messageId, 'listener' => static::class],
-                ['status' => ListenerRunStatus::PROCESSING],
+                [...TenantColumn::attributes($email->tenantId), 'status' => ListenerRunStatus::PROCESSING],
             );
 
             if ($run->status === ListenerRunStatus::PROCESSED) {
@@ -122,33 +157,6 @@ abstract class MailListener implements ShouldQueue
         }
     }
 
-    /**
-     * Called by the queue once all attempts are exhausted (also on timeouts, where handle() could not record it).
-     */
-    final public function failed(EmailReceived $event, Throwable $exception): void
-    {
-        if ($event->email->messageId === null) {
-            return;
-        }
-
-        $run = MailListenerRun::query()
-            ->where('mail_message_id', $event->email->messageId)
-            ->where('listener', static::class)
-            ->first();
-
-        if ($run instanceof MailListenerRun && $run->status !== ListenerRunStatus::PROCESSED) {
-            $this->markFailed($run, $exception);
-        }
-    }
-
-    /**
-     * @return list<string>
-     */
-    final public function tags(): array
-    {
-        return ['MailListeners', class_basename(static::class)];
-    }
-
     private function markFailed(MailListenerRun $run, Throwable $exception): void
     {
         $run->update([
@@ -158,6 +166,7 @@ abstract class MailListener implements ShouldQueue
         ]);
 
         MailListenersLog::channel()->error('Mail listeners: a listener failed to process an email.', [
+            ...Tenancy::logContext($run->tenantKey()),
             'listener' => static::class,
             'message' => $run->mail_message_id,
             'attempts' => $run->attempts,

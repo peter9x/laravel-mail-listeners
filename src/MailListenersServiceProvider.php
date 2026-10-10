@@ -9,10 +9,13 @@ use Mupy\MailListeners\Console\InstallCommand;
 use Mupy\MailListeners\Console\PollCommand;
 use Mupy\MailListeners\Console\ReadCommand;
 use Mupy\MailListeners\Console\SyncCommand;
+use Mupy\MailListeners\Contracts\TenantResolver;
+use Mupy\MailListeners\Tenancy\NullTenantResolver;
+use Mupy\MailListeners\Tenancy\Tenancy;
 
 /**
  * Registers the base of the mail listeners system: config, log channel, database, connectors, events registry,
- * mail accounts defined in code and commands.
+ * mail accounts defined in code, tenancy and commands. Apps with tenants bind their own {@see TenantResolver}.
  * Scheduling `mail-listeners:poll` (every minute) and `model:prune` (MailMessage) is left to the app.
  */
 class MailListenersServiceProvider extends ServiceProvider
@@ -24,6 +27,8 @@ class MailListenersServiceProvider extends ServiceProvider
         $this->app->singleton(ConnectorManager::class);
         $this->app->singleton(EventRegistry::class);
         $this->app->singleton(MailboxRegistry::class);
+        $this->app->singleton(Tenancy::class);
+        $this->app->singletonIf(TenantResolver::class, NullTenantResolver::class);
 
         $this->registerLogChannel();
     }

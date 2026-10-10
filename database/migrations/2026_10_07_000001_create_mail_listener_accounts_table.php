@@ -5,9 +5,18 @@ declare(strict_types=1);
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
+use Mupy\MailListeners\Tenancy\TenantColumn;
 
 return new class extends Migration
 {
+    /**
+     * The `mail-listeners.database.connection` connection (default: the app default connection).
+     */
+    public function getConnection(): ?string
+    {
+        return config('mail-listeners.database.connection');
+    }
+
     /**
      * Run the migrations.
      */
@@ -32,6 +41,9 @@ return new class extends Migration
             $table->text('last_error')->nullable();
             $table->timestampTz('last_error_at')->nullable();
             $table->timestamps();
+
+            // Only when `mail-listeners.tenancy.enabled` (null for central accounts).
+            TenantColumn::add($table, ['email']);
         });
     }
 

@@ -23,7 +23,7 @@ class MailAccountFactory extends Factory
             'name' => $this->faker->words(2, true),
             'email' => $this->faker->unique()->safeEmail(),
             'connector' => 'microsoft_graph',
-            'connector_settings' => ['tenant' => 'default', 'folder' => 'inbox'],
+            'connector_settings' => ['connection' => 'default', 'folder' => 'inbox'],
             'events' => [],
             'poll_cron' => '*/5 * * * *',
             'read_from' => now()->subDay(),
@@ -50,6 +50,14 @@ class MailAccountFactory extends Factory
     public function inactive(): static
     {
         return $this->state(fn (): array => ['active' => false]);
+    }
+
+    /**
+     * Account of a tenant (multi-tenancy), null for a central account.
+     */
+    public function forTenant(int|string|null $tenant): static
+    {
+        return $this->state(fn (): array => ['tenant_id' => $tenant]);
     }
 
     public function managed(): static

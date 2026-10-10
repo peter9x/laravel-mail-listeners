@@ -16,11 +16,14 @@ use Mupy\MailListeners\Contracts\MailConnector;
 use Mupy\MailListeners\Database\Factories\MailAccountFactory;
 use Mupy\MailListeners\EventRegistry;
 use Mupy\MailListeners\Events\EmailReceived;
+use Mupy\MailListeners\Models\Concerns\BelongsToTenant;
+use Mupy\MailListeners\Models\Concerns\UsesMailListenersConnection;
 
 /**
  * Mailbox read periodically, firing its context events for every new email.
  *
  * @property int $id
+ * @property int|string|null $tenant_id Tenant of the account, null for central accounts (only with `mail-listeners.tenancy.enabled`)
  * @property string $name
  * @property string $email
  * @property string $connector Key of a connector registered in the `mail-listeners.connectors` config
@@ -42,6 +45,8 @@ use Mupy\MailListeners\Events\EmailReceived;
  */
 class MailAccount extends Model
 {
+    use BelongsToTenant, UsesMailListenersConnection;
+
     /** @use HasFactory<MailAccountFactory> */
     use HasFactory;
 

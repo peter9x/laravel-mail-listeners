@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Mupy\MailListeners\Tests;
 
+use Illuminate\Database\Eloquent\Model;
+use Mupy\MailListeners\Connectors\MicrosoftGraphConnector;
 use Mupy\MailListeners\MailListenersServiceProvider;
 use Mupy\MailListeners\Tests\Support\Events\HrEmailReceived;
 use Mupy\MailListeners\Tests\Support\Events\SupplierEmailReceived;
@@ -13,6 +15,15 @@ use Webklex\IMAP\Providers\LaravelServiceProvider as ImapServiceProvider;
 
 abstract class TestCase extends Orchestra
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        MicrosoftGraphConnector::resolveCredentialsUsing(null);
+        // Like many apps: the package must work with Eloquent strict mode, with or without tenancy.
+        Model::shouldBeStrict();
+    }
+
     /**
      * @return list<class-string>
      */
@@ -32,7 +43,7 @@ abstract class TestCase extends Orchestra
             'support' => ['class' => SupportEmailReceived::class, 'label' => 'Support'],
             'hr' => ['class' => HrEmailReceived::class, 'label' => 'Human resources'],
         ]);
-        $app['config']->set('mail-listeners.microsoft_graph.tenants', [
+        $app['config']->set('mail-listeners.microsoft_graph.connections', [
             'default' => ['tenant' => 'tenant-id', 'client_id' => 'client-id', 'client_secret' => 'secret'],
             'other' => ['tenant' => 'other-tenant-id', 'client_id' => 'other-client-id', 'client_secret' => 'other-secret'],
         ]);

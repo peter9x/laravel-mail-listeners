@@ -7,11 +7,14 @@ namespace Mupy\MailListeners\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Mupy\MailListeners\Enums\ListenerRunStatus;
+use Mupy\MailListeners\Models\Concerns\BelongsToTenant;
+use Mupy\MailListeners\Models\Concerns\UsesMailListenersConnection;
 
 /**
  * Processing of one email by one interested listener.
  *
  * @property int $id
+ * @property int|string|null $tenant_id Tenant of the account (only with `mail-listeners.tenancy.enabled`)
  * @property int $mail_message_id
  * @property class-string $listener
  * @property ListenerRunStatus $status
@@ -25,9 +28,12 @@ use Mupy\MailListeners\Enums\ListenerRunStatus;
  */
 class MailListenerRun extends Model
 {
+    use BelongsToTenant, UsesMailListenersConnection;
+
     protected $table = 'mail_listener_runs';
 
     protected $fillable = [
+        'tenant_id',
         'mail_message_id',
         'listener',
         'status',

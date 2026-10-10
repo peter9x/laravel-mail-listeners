@@ -5,9 +5,18 @@ declare(strict_types=1);
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
+use Mupy\MailListeners\Tenancy\TenantColumn;
 
 return new class extends Migration
 {
+    /**
+     * The `mail-listeners.database.connection` connection (default: the app default connection).
+     */
+    public function getConnection(): ?string
+    {
+        return config('mail-listeners.database.connection');
+    }
+
     /**
      * Run the migrations.
      */
@@ -28,6 +37,9 @@ return new class extends Migration
 
             $table->unique(['mail_account_id', 'dedup_key']);
             $table->index(['mail_account_id', 'received_at']);
+
+            // Only when `mail-listeners.tenancy.enabled`: the tenant of the account, to list by tenant without joins.
+            TenantColumn::add($table);
         });
     }
 

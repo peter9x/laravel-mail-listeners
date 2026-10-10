@@ -10,20 +10,101 @@ use Mupy\MailListeners\Enums\MessageStatus;
 use Mupy\MailListeners\Models\MailAccount;
 use Mupy\MailListeners\Models\MailMessage;
 use Mupy\MailListeners\Support\MailListenersLog;
+use Mupy\MailListeners\Tenancy\Tenancy;
+use Mupy\MailListeners\Tenancy\TenantColumn;
 use Throwable;
 
 /**
  * Reads the new emails of a mail account and fires the account context events for each one.
  * The mailbox is never changed: already read emails are tracked in `mail_listener_messages`.
+ * With multi-tenancy, everything runs in the context of the tenant of the account (events and listeners included).
  */
-final class MailReader
+final readonly class MailReader
 {
+    public function __construct(private Tenancy $tenancy) {}
+
     /**
      * Read the emails received since the last poll. Returns the number of new emails.
      *
      * @throws Throwable when the account cannot be read (recorded on the account)
      */
     public function poll(MailAccount $account): int
+    {
+        return $this->tenancy->run($account->tenantKey(), fn (): int => $this->pollInTenant($account));
+    }
+
+    /**
+     * Read the emails received within [$from, $to[ (e.g. to recover a past period), firing the events of the new ones.
+     * Emails already read are skipped, and the polling cursor of the account is left untouched.
+     * $onEmail is called after each email is recorded (and its events fired), with the counters so far.
+     *
+     * @param  (callable(InboundEmail $email, bool $isNew, array{found: int, new: int} $result): void)|null  $onEmail
+     * @return array{found: int, new: int}
+     */
+    public function readBetween(MailAccount $account, CarbonImmutable $from, CarbonImmutable $to, ?callable $onEmail = null): array
+    {
+        return $this->tenancy->run($account->tenantKey(), function () use ($account, $from, $to, $onEmail): array {
+            $result = ['found' => 0, 'new' => 0];
+
+            $account->mailConnector()->eachMessageBetween(
+                $account,
+                $from,
+                $to,
+                function (InboundEmail $email) use ($account, $onEmail, &$result): void {
+                    $result['found']++;
+
+                    $isNew = $this->record($account, $email);
+
+                    if ($isNew) {
+                        $result['new']++;
+                    }
+
+                    if ($onEmail !== null) {
+                        $onEmail($email, $isNew, $result);
+                    }
+                },
+            );
+
+            return $result;
+        });
+    }
+
+    /**
+     * Fetch an already read email again and fire the account events, so the listeners that failed run again
+     * (listeners that already processed it skip it).
+     */
+    public function redispatch(MailMessage $message): void
+    {
+        $this->tenancy->run($message->tenantKey(), function () use ($message): void {
+            $account = $message->account;
+
+            $email = $account->mailConnector()
+                ->message($account, $message->provider_message_id)
+                ->withMessage($message);
+
+            $this->dispatchEvents($account, $message, $email);
+        });
+    }
+
+    /**
+     * Record the email (when not read yet) and fire the account events for it, even when it was already read
+     * (e.g. to test the listeners with a real email). Listeners that already processed it skip it.
+     */
+    public function dispatchEmail(MailAccount $account, InboundEmail $email): MailMessage
+    {
+        return $this->tenancy->run($account->tenantKey(), function () use ($account, $email): MailMessage {
+            $message = $this->findOrRecord($account, $email);
+
+            $this->dispatchEvents($account, $message, $email->withMessage($message));
+
+            return $message;
+        });
+    }
+
+    /**
+     * @throws Throwable
+     */
+    private function pollInTenant(MailAccount $account): int
     {
         $newMessages = 0;
         $lastReceivedAt = $account->last_received_at !== null ? CarbonImmutable::instance($account->last_received_at) : null;
@@ -52,6 +133,7 @@ final class MailReader
             ]);
 
             MailListenersLog::channel()->error('Mail listeners: failed to read the account.', [
+                ...Tenancy::logContext($account->tenantKey()),
                 'account' => $account->id,
                 'email' => $account->email,
                 'error' => $exception->getMessage(),
@@ -69,6 +151,7 @@ final class MailReader
 
         if ($newMessages > 0) {
             MailListenersLog::channel()->info('Mail listeners: new emails read.', [
+                ...Tenancy::logContext($account->tenantKey()),
                 'account' => $account->id,
                 'email' => $account->email,
                 'count' => $newMessages,
@@ -76,68 +159,6 @@ final class MailReader
         }
 
         return $newMessages;
-    }
-
-    /**
-     * Read the emails received within [$from, $to[ (e.g. to recover a past period), firing the events of the new ones.
-     * Emails already read are skipped, and the polling cursor of the account is left untouched.
-     * $onEmail is called after each email is recorded (and its events fired), with the counters so far.
-     *
-     * @param  (callable(InboundEmail $email, bool $isNew, array{found: int, new: int} $result): void)|null  $onEmail
-     * @return array{found: int, new: int}
-     */
-    public function readBetween(MailAccount $account, CarbonImmutable $from, CarbonImmutable $to, ?callable $onEmail = null): array
-    {
-        $result = ['found' => 0, 'new' => 0];
-
-        $account->mailConnector()->eachMessageBetween(
-            $account,
-            $from,
-            $to,
-            function (InboundEmail $email) use ($account, $onEmail, &$result): void {
-                $result['found']++;
-
-                $isNew = $this->record($account, $email);
-
-                if ($isNew) {
-                    $result['new']++;
-                }
-
-                if ($onEmail !== null) {
-                    $onEmail($email, $isNew, $result);
-                }
-            },
-        );
-
-        return $result;
-    }
-
-    /**
-     * Fetch an already read email again and fire the account events, so the listeners that failed run again
-     * (listeners that already processed it skip it).
-     */
-    public function redispatch(MailMessage $message): void
-    {
-        $account = $message->account;
-
-        $email = $account->mailConnector()
-            ->message($account, $message->provider_message_id)
-            ->withMessageId($message->id);
-
-        $this->dispatchEvents($account, $message, $email);
-    }
-
-    /**
-     * Record the email (when not read yet) and fire the account events for it, even when it was already read
-     * (e.g. to test the listeners with a real email). Listeners that already processed it skip it.
-     */
-    public function dispatchEmail(MailAccount $account, InboundEmail $email): MailMessage
-    {
-        $message = $this->findOrRecord($account, $email);
-
-        $this->dispatchEvents($account, $message, $email->withMessageId($message->id));
-
-        return $message;
     }
 
     /**
@@ -151,19 +172,20 @@ final class MailReader
             return false;
         }
 
-        $this->dispatchEvents($account, $message, $email->withMessageId($message->id));
+        $this->dispatchEvents($account, $message, $email->withMessage($message));
 
         return true;
     }
 
     private function findOrRecord(MailAccount $account, InboundEmail $email): MailMessage
     {
-        return MailMessage::query()->createOrFirst(
+        return MailMessage::query()->allTenants()->createOrFirst(
             [
                 'mail_account_id' => $account->id,
                 'dedup_key' => $email->dedupKey(),
             ],
             [
+                ...TenantColumn::attributes($account->tenantKey()),
                 'provider_message_id' => $email->providerMessageId,
                 'internet_message_id' => $email->internetMessageId !== null ? mb_substr($email->internetMessageId, 0, 512) : null,
                 'subject' => mb_substr($email->subjectDecoded, 0, 1000),
@@ -188,6 +210,7 @@ final class MailReader
                 $errors[] = class_basename($eventClass).': '.$exception->getMessage();
 
                 MailListenersLog::channel()->error('Mail listeners: failed to dispatch an event.', [
+                    ...Tenancy::logContext($account->tenantKey()),
                     'account' => $account->id,
                     'message' => $message->id,
                     'event' => $eventClass,

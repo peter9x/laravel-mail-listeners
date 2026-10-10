@@ -6,6 +6,8 @@ namespace Mupy\MailListeners\Console;
 
 use Carbon\CarbonImmutable;
 use Illuminate\Console\Command;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
 use Mupy\MailListeners\Console\Concerns\ReportsMailboxSync;
@@ -31,6 +33,7 @@ final class ReadCommand extends Command
 
     protected $signature = 'mail-listeners:read
         {email : Email of a mail account (in the database or defined in code)}
+        {--tenant= : Tenant of the mail account (multi-tenancy; needed when several tenants have the email)}
         {--from= : Start of the period (e.g. 01-01-2026 or "01-01-2026 08:00"). Default: 24h before the end}
         {--to= : End of the period (e.g. 31-01-2026, the whole day, or "31-01-2026 18:00"). Default: now}';
 
@@ -39,16 +42,29 @@ final class ReadCommand extends Command
     public function handle(MailReader $reader, MailboxRegistry $mailboxes): int
     {
         $email = mb_strtolower(mb_trim((string) $this->argument('email')));
+        $tenant = $this->tenantOption();
 
-        $this->reportSyncErrors($mailboxes->syncIfChanged());
-
-        $account = MailAccount::query()->where('email', $email)->first();
-
-        if (! $account instanceof MailAccount && $mailboxes->has($email)) {
-            $this->reportSyncErrors($mailboxes->sync());
-
-            $account = MailAccount::query()->where('email', $email)->first();
+        if ($tenant === false) {
+            return self::FAILURE;
         }
+
+        $this->reportSyncErrors($mailboxes->syncIfChanged($tenant), $tenant);
+
+        $accounts = $this->accounts($email, $tenant);
+
+        if ($accounts->isEmpty() && $mailboxes->definitions($tenant)->has($email)) {
+            $this->reportSyncErrors($mailboxes->sync($tenant), $tenant);
+
+            $accounts = $this->accounts($email, $tenant);
+        }
+
+        if ($accounts->count() > 1) {
+            $this->error("The mail account {$email} exists in several tenants: choose one with --tenant.");
+
+            return self::FAILURE;
+        }
+
+        $account = $accounts->first();
 
         if (! $account instanceof MailAccount) {
             $this->error("The mail account {$email} is not configured.");
@@ -118,8 +134,9 @@ final class ReadCommand extends Command
                 ));
                 $this->line("Last email processed: received at {$lastReceivedAt->format('d-m-Y H:i')}.");
                 $this->line(sprintf(
-                    'Resume with: php artisan mail-listeners:read %s --from="%s" --to="%s"',
+                    'Resume with: php artisan mail-listeners:read %s%s --from="%s" --to="%s"',
                     $account->email,
+                    $account->tenantKey() !== null ? " --tenant={$account->tenantKey()}" : '',
                     $lastReceivedAt->format('d-m-Y H:i'),
                     ($to->second > 0 || $to->microsecond > 0 ? $to->startOfMinute()->addMinute() : $to)->format('d-m-Y H:i'),
                 ));
@@ -138,6 +155,21 @@ final class ReadCommand extends Command
         ));
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Accounts with the email: of the tenant when given, of any tenant otherwise (at most 2, to detect ambiguity).
+     *
+     * @return Collection<int, MailAccount>
+     */
+    private function accounts(string $email, int|string|null $tenant): Collection
+    {
+        return MailAccount::query()
+            ->when($tenant !== null, fn (Builder $query) => $query->forTenant($tenant), fn (Builder $query) => $query->allTenants())
+            ->where('email', $email)
+            ->orderBy('id')
+            ->limit(2)
+            ->get();
     }
 
     /**

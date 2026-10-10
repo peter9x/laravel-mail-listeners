@@ -19,8 +19,8 @@ use Microsoft\Kiota\Authentication\Oauth\ClientCredentialContext;
 use Mupy\MailListeners\Exceptions\ConnectorException;
 
 /**
- * Read-only access to Office 365 mailboxes through Microsoft Graph, with the application credentials
- * of a tenant configured in `mail-listeners.microsoft_graph.tenants` (Mail.Read permission).
+ * Read-only access to Office 365 mailboxes through Microsoft Graph, with application credentials (Mail.Read
+ * permission), resolved by {@see \Mupy\MailListeners\Connectors\MicrosoftGraphConnector}.
  */
 class GraphMailClient
 {
@@ -31,12 +31,15 @@ class GraphMailClient
 
     private ?GraphServiceClient $client = null;
 
-    public function auth(string $tenant): static
+    /**
+     * @param  array{tenant?: mixed, client_id?: mixed, client_secret?: mixed}|null  $credentials  Azure tenant id, client id and secret
+     *
+     * @throws ConnectorException when the credentials are missing
+     */
+    public function auth(?array $credentials, string $connection = 'default'): static
     {
-        $credentials = config('mail-listeners.microsoft_graph.tenants.'.$tenant);
-
         if (! is_array($credentials) || empty($credentials['tenant']) || empty($credentials['client_id']) || empty($credentials['client_secret'])) {
-            throw new ConnectorException(__('The Microsoft Graph tenant :tenant is not configured.', ['tenant' => $tenant]));
+            throw new ConnectorException(__('The Microsoft Graph connection :connection is not configured.', ['connection' => $connection]));
         }
 
         $this->client = new GraphServiceClient(new ClientCredentialContext(
@@ -134,7 +137,7 @@ class GraphMailClient
     private function client(): GraphServiceClient
     {
         if (! $this->client instanceof GraphServiceClient) {
-            throw new ConnectorException(__('Call auth() with a tenant before using the Microsoft Graph client.'));
+            throw new ConnectorException(__('Call auth() with the credentials before using the Microsoft Graph client.'));
         }
 
         return $this->client;

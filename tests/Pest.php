@@ -6,11 +6,16 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Microsoft\Graph\Generated\Models\ODataErrors\MainError;
 use Microsoft\Graph\Generated\Models\ODataErrors\ODataError;
 use Microsoft\Kiota\Abstractions\ApiException;
+use Mupy\MailListeners\Tests\TenancyTestCase;
 use Mupy\MailListeners\Tests\TestCase;
 
 pest()->extend(TestCase::class)
     ->use(RefreshDatabase::class)
     ->in('Feature');
+
+pest()->extend(TenancyTestCase::class)
+    ->use(RefreshDatabase::class)
+    ->in('Tenancy');
 
 function graphODataError(string $code, string $message, int $status): ODataError
 {

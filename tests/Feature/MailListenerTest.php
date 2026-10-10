@@ -28,7 +28,7 @@ function recordedInboundEmail(MailAccount $account, array $overrides = []): Inbo
     $email = FakeConnector::makeEmail($account, $overrides);
     $message = MailMessage::factory()->for($account, 'account')->create(['dedup_key' => $email->dedupKey()]);
 
-    return $email->withMessageId($message->id);
+    return $email->withMessage($message);
 }
 
 it('ignores the emails the listener is not interested in, without recording a run', function (): void {

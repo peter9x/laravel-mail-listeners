@@ -42,18 +42,20 @@ return [
     |--------------------------------------------------------------------------
     |
     | Application credentials (client credentials flow, Mail.Read permission),
-    | keyed by the tenant name an account selects.
+    | keyed by the connection name an account selects (`tenant` is the Azure
+    | tenant id). Credentials can also be resolved in code, e.g. from a table:
+    | see MicrosoftGraphConnector::resolveCredentialsUsing().
     |
     */
     'microsoft_graph' => [
-        'tenants' => [
+        'connections' => [
             'default' => [
                 'tenant' => env('MAIL_LISTENERS_GRAPH_TENANT'),
                 'client_id' => env('MAIL_LISTENERS_GRAPH_CLIENT_ID'),
                 'client_secret' => env('MAIL_LISTENERS_GRAPH_CLIENT_SECRET'),
             ],
         ],
-        'default_tenant' => 'default',
+        'default_connection' => 'default',
         'default_folder' => 'inbox',
     ],
 
@@ -64,6 +66,39 @@ return [
     */
     'imap' => [
         'default_folder' => 'INBOX',
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Database
+    |--------------------------------------------------------------------------
+    |
+    | Connection of the package tables (null: the default connection). Set it
+    | to your central connection when your tenancy package switches the
+    | default connection to a database per tenant.
+    |
+    */
+    'database' => [
+        'connection' => env('MAIL_LISTENERS_DB_CONNECTION'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Multi-tenancy
+    |--------------------------------------------------------------------------
+    |
+    | `enabled`: scope the accounts, read emails and listener runs by a
+    | `tenant_id` column (a single database shared by every tenant). Bind
+    | Mupy\MailListeners\Contracts\TenantResolver to tell the package the
+    | current tenant. Set it before running the migrations: the column is
+    | only created when enabled.
+    | `column_type`: type of the `tenant_id` column: unsignedBigInteger,
+    | uuid, ulid or string.
+    |
+    */
+    'tenancy' => [
+        'enabled' => env('MAIL_LISTENERS_TENANCY', false),
+        'column_type' => env('MAIL_LISTENERS_TENANT_COLUMN_TYPE', 'unsignedBigInteger'),
     ],
 
     /*

@@ -7,6 +7,7 @@ namespace Mupy\MailListeners\Data;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Collection;
 use Mupy\MailListeners\Models\MailAccount;
+use Mupy\MailListeners\Models\MailMessage;
 
 /**
  * An email read from a mail account, as delivered to the listeners.
@@ -15,16 +16,16 @@ use Mupy\MailListeners\Models\MailAccount;
 final class InboundEmail
 {
     /**
+     * Subject with MIME encoded words decoded (e.g. "=?UTF-8?Q?...?="); equal to `subject` when it was not encoded.
+     */
+    public readonly string $subjectDecoded;
+
+    /**
      * @var Collection<int, EmailAttachment>|null
      */
     private ?Collection $loadedAttachments = null;
 
     private ?MailAccount $loadedAccount = null;
-
-    /**
-     * Subject with MIME encoded words decoded (e.g. "=?UTF-8?Q?...?="); equal to `subject` when it was not encoded.
-     */
-    public readonly string $subjectDecoded;
 
     /**
      * @param  string  $subject  subject as received from the provider (it may still be MIME encoded)
@@ -46,6 +47,8 @@ final class InboundEmail
         /** Id of the `mail_listener_messages` row, set once the email is recorded. */
         public readonly ?int $messageId = null,
         ?string $subjectDecoded = null,
+        /** Tenant of the account (null without tenancy or for central accounts), set once the email is recorded. */
+        public readonly int|string|null $tenantId = null,
     ) {
         $this->subjectDecoded = $subjectDecoded ?? $subject;
     }
@@ -71,13 +74,14 @@ final class InboundEmail
             'body',
             'hasAttachments',
             'messageId',
+            'tenantId',
         ];
     }
 
     /**
-     * Copy of this email linked to its `mail_listener_messages` row.
+     * Copy of this email linked to its `mail_listener_messages` row (and to the tenant of the row).
      */
-    public function withMessageId(int $messageId): self
+    public function withMessage(MailMessage $message): self
     {
         return new self(
             accountId: $this->accountId,
@@ -91,8 +95,9 @@ final class InboundEmail
             bodyContentType: $this->bodyContentType,
             body: $this->body,
             hasAttachments: $this->hasAttachments,
-            messageId: $messageId,
+            messageId: $message->id,
             subjectDecoded: $this->subjectDecoded,
+            tenantId: $message->tenantKey(),
         );
     }
 
@@ -106,7 +111,7 @@ final class InboundEmail
 
     public function account(): MailAccount
     {
-        return $this->loadedAccount ??= MailAccount::query()->findOrFail($this->accountId);
+        return $this->loadedAccount ??= MailAccount::query()->allTenants()->findOrFail($this->accountId);
     }
 
     /**

@@ -13,6 +13,7 @@ use Mupy\MailListeners\Models\MailAccount;
 /**
  * Reads the new emails of one mail account and fires its events.
  * Unique per account, so accounts are read in parallel and an account is never read twice at the same time.
+ * With multi-tenancy, the account is read in the context of its tenant (see {@see MailReader}).
  */
 final class PollMailAccount implements ShouldBeUnique, ShouldQueue
 {
@@ -44,7 +45,12 @@ final class PollMailAccount implements ShouldBeUnique, ShouldQueue
      */
     public function tags(): array
     {
-        return ['MailListeners', $this->account->email, class_basename(self::class)];
+        return array_values(array_filter([
+            'MailListeners',
+            $this->account->tenantKey() !== null ? 'tenant:'.$this->account->tenantKey() : null,
+            $this->account->email,
+            class_basename(self::class),
+        ]));
     }
 
     public function handle(MailReader $reader): void

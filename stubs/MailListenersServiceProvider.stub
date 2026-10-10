@@ -11,9 +11,23 @@ use Mupy\MailListeners\Facades\MailListeners;
  */
 class MailListenersServiceProvider extends ServiceProvider
 {
+    public function register(): void
+    {
+        // Multi-tenancy (`mail-listeners.tenancy.enabled`): tell the package the current tenant and how to run
+        // code in the context of a tenant, implementing Mupy\MailListeners\Contracts\TenantResolver.
+        // $this->app->singleton(\Mupy\MailListeners\Contracts\TenantResolver::class, \App\Support\MailListenersTenantResolver::class);
+    }
+
     public function boot(): void
     {
         $this->mailboxes();
+        $this->tenantMailboxes();
+
+        // Microsoft Graph credentials resolved in code (e.g. from a settings table), instead of
+        // `mail-listeners.microsoft_graph.connections`; return null to use the config.
+        // \Mupy\MailListeners\Connectors\MicrosoftGraphConnector::resolveCredentialsUsing(
+        //     fn (string $connection, \Mupy\MailListeners\Models\MailAccount $account): ?array => null,
+        // );
     }
 
     /**
@@ -22,10 +36,10 @@ class MailListenersServiceProvider extends ServiceProvider
      */
     protected function mailboxes(): void
     {
-        // Office 365: the tenant credentials come from `mail-listeners.microsoft_graph.tenants`.
+        // Office 365: the credentials come from `mail-listeners.microsoft_graph.connections`.
         // MailListeners::mailbox('invoices@example.com')
         //     ->name('Invoices')
-        //     ->connector('microsoft_graph', ['tenant' => 'default', 'folder' => 'inbox'])
+        //     ->connector('microsoft_graph', ['connection' => 'default', 'folder' => 'inbox'])
         //     ->events(\App\Events\SupplierEmailReceived::class)
         //     ->pollEvery(5);
 
@@ -40,5 +54,19 @@ class MailListenersServiceProvider extends ServiceProvider
         //     ])
         //     ->events(\App\Events\HrEmailReceived::class)
         //     ->cron('0 6 * * *');
+    }
+
+    /**
+     * Multi-tenancy: define the mailboxes of each tenant. The callback runs in the context of the tenant when its
+     * mailboxes are synced: by `mail-listeners:sync` (e.g. on deploy) and by MailListeners::syncTenant($tenant),
+     * to call when the data they come from changes (e.g. the tenant settings). The poll never runs it.
+     */
+    protected function tenantMailboxes(): void
+    {
+        // MailListeners::tenantMailboxes(function (\Mupy\MailListeners\MailboxDefinitions $mailboxes, int|string $tenant): void {
+        //     $mailboxes->mailbox('invoices@tenant.example.com')
+        //         ->connector('microsoft_graph', ['connection' => 'default'])
+        //         ->events(\App\Events\SupplierEmailReceived::class);
+        // });
     }
 }

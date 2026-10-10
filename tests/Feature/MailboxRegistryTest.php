@@ -40,7 +40,7 @@ function accountQueries(callable $callback): int
 it('creates the accounts defined in code on poll and queues their reading', function (): void {
     MailListeners::mailbox(' Invoices@Example.com ')
         ->name('Invoices')
-        ->connector('microsoft_graph', ['tenant' => 'other', 'folder' => 'invoices'])
+        ->connector('microsoft_graph', ['connection' => 'other', 'folder' => 'invoices'])
         ->events(SupplierEmailReceived::class, 'hr')
         ->pollEvery(10)
         ->readFrom('2026-10-01');
@@ -57,7 +57,7 @@ it('creates the accounts defined in code on poll and queues their reading', func
     expect($account->email)->toBe('invoices@example.com')
         ->and($account->name)->toBe('Invoices')
         ->and($account->connector)->toBe('microsoft_graph')
-        ->and($account->connector_settings)->toBe(['tenant' => 'other', 'folder' => 'invoices'])
+        ->and($account->connector_settings)->toBe(['connection' => 'other', 'folder' => 'invoices'])
         ->and($account->events)->toBe([SupplierEmailReceived::class, 'hr'])
         ->and($account->poll_cron)->toBe('*/10 * * * *')
         ->and($account->read_from->toDateString())->toBe('2026-10-01')

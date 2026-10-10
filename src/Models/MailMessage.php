@@ -13,11 +13,14 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Mupy\MailListeners\Database\Factories\MailMessageFactory;
 use Mupy\MailListeners\Enums\MessageStatus;
+use Mupy\MailListeners\Models\Concerns\BelongsToTenant;
+use Mupy\MailListeners\Models\Concerns\UsesMailListenersConnection;
 
 /**
  * Email already read from a mail account. Only metadata is kept (no body, no attachments).
  *
  * @property int $id
+ * @property int|string|null $tenant_id Tenant of the account (only with `mail-listeners.tenancy.enabled`)
  * @property int $mail_account_id
  * @property string $dedup_key
  * @property string $provider_message_id
@@ -36,12 +39,15 @@ use Mupy\MailListeners\Enums\MessageStatus;
  */
 class MailMessage extends Model
 {
+    use BelongsToTenant, UsesMailListenersConnection;
+
     /** @use HasFactory<MailMessageFactory> */
     use HasFactory, Prunable;
 
     protected $table = 'mail_listener_messages';
 
     protected $fillable = [
+        'tenant_id',
         'mail_account_id',
         'dedup_key',
         'provider_message_id',
@@ -64,13 +70,13 @@ class MailMessage extends Model
     }
 
     /**
-     * Read emails older than the retention (`mail-listeners.retention_days`) are pruned by `model:prune`.
+     * Read emails older than the retention (`mail-listeners.retention_days`) are pruned by `model:prune`, in every tenant.
      *
      * @return Builder<MailMessage>
      */
     public function prunable(): Builder
     {
-        return static::query()->where('received_at', '<', now()->subDays((int) config('mail-listeners.retention_days', 180)));
+        return static::query()->allTenants()->where('received_at', '<', now()->subDays((int) config('mail-listeners.retention_days', 180)));
     }
 
     protected static function newFactory(): Factory

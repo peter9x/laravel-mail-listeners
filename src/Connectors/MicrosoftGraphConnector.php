@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Mupy\MailListeners\Connectors;
 
 use Carbon\CarbonImmutable;
+use Closure;
 use Illuminate\Validation\Rule;
 use Microsoft\Graph\Generated\Models\FileAttachment;
 use Microsoft\Graph\Generated\Models\Message;
@@ -20,11 +21,11 @@ use Mupy\MailListeners\Models\MailAccount;
 /**
  * Reads an Office 365 mailbox through Microsoft Graph with application credentials (Mail.Read).
  *
- * Connector settings: `tenant` (a tenant of `mail-listeners.microsoft_graph.tenants`, default
- * `mail-listeners.microsoft_graph.default_tenant`) and `folder` (well-known folder name or id, default "inbox";
- * `*` reads every folder of the mailbox).
+ * Connector settings: `connection` (the credentials: a connection of `mail-listeners.microsoft_graph.connections`,
+ * or one known to {@see resolveCredentialsUsing()}; default `mail-listeners.microsoft_graph.default_connection`) and
+ * `folder` (well-known folder name or id, default "inbox"; `*` reads every folder of the mailbox).
  */
-final readonly class MicrosoftGraphConnector implements MailConnector
+final class MicrosoftGraphConnector implements MailConnector
 {
     /**
      * `folder` value that reads the messages of every folder (Graph `/users/{id}/messages`).
@@ -53,7 +54,36 @@ final readonly class MicrosoftGraphConnector implements MailConnector
      */
     private const array MESSAGE_EXPAND = ['attachments($select=name,contentType,isInline,size)'];
 
-    public function __construct(private GraphMailClient $graph) {}
+    /**
+     * @var (Closure(string, MailAccount): ?array<string, mixed>)|null
+     */
+    private static ?Closure $credentialsResolver = null;
+
+    public function __construct(private readonly GraphMailClient $graph) {}
+
+    /**
+     * Resolve the credentials of the connections in code, e.g. from a settings table of the tenant of the account:
+     * the callback returns `['tenant' => ..., 'client_id' => ..., 'client_secret' => ...]`, or null to use the
+     * `mail-listeners.microsoft_graph.connections` config. Pass null to remove it.
+     *
+     * @param  (Closure(string $connection, MailAccount $account): ?array<string, mixed>)|null  $resolver
+     */
+    public static function resolveCredentialsUsing(?Closure $resolver): void
+    {
+        self::$credentialsResolver = $resolver;
+    }
+
+    /**
+     * Credentials of the connection: from the resolver when it returns them, from the config otherwise.
+     *
+     * @return array<string, mixed>|null
+     */
+    public static function credentials(string $connection, MailAccount $account): ?array
+    {
+        $credentials = self::$credentialsResolver instanceof Closure ? (self::$credentialsResolver)($connection, $account) : null;
+
+        return $credentials ?? ((array) config('mail-listeners.microsoft_graph.connections', []))[$connection] ?? null;
+    }
 
     public static function label(): string
     {
@@ -63,7 +93,10 @@ final readonly class MicrosoftGraphConnector implements MailConnector
     public static function settingsRules(bool $creating): array
     {
         return [
-            'tenant' => ['nullable', 'string', Rule::in(self::tenants())],
+            // Connections resolved in code cannot be listed: they are checked when connecting.
+            'connection' => self::$credentialsResolver instanceof Closure
+                ? ['nullable', 'string', 'max:100']
+                : ['nullable', 'string', Rule::in(self::connections())],
             'folder' => ['nullable', 'string', 'max:255'],
         ];
     }
@@ -75,22 +108,22 @@ final readonly class MicrosoftGraphConnector implements MailConnector
 
     public static function defaultSettings(): array
     {
-        return ['tenant' => self::defaultTenant(), 'folder' => null];
+        return ['connection' => self::defaultConnection(), 'folder' => null];
     }
 
     /**
-     * Tenants configured in `mail-listeners.microsoft_graph.tenants`.
+     * Connections configured in `mail-listeners.microsoft_graph.connections`.
      *
      * @return list<string>
      */
-    public static function tenants(): array
+    public static function connections(): array
     {
-        return array_keys((array) config('mail-listeners.microsoft_graph.tenants', []));
+        return array_keys((array) config('mail-listeners.microsoft_graph.connections', []));
     }
 
-    public static function defaultTenant(): string
+    public static function defaultConnection(): string
     {
-        return (string) config('mail-listeners.microsoft_graph.default_tenant', 'default');
+        return (string) config('mail-listeners.microsoft_graph.default_connection', 'default');
     }
 
     public static function defaultFolder(): string
@@ -172,7 +205,9 @@ final readonly class MicrosoftGraphConnector implements MailConnector
 
     private function client(MailAccount $account): GraphMailClient
     {
-        return $this->graph->auth($account->connectorSetting('tenant', self::defaultTenant()));
+        $connection = (string) $account->connectorSetting('connection', self::defaultConnection());
+
+        return $this->graph->auth(self::credentials($connection, $account), $connection);
     }
 
     /**
