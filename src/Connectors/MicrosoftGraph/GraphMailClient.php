@@ -29,6 +29,11 @@ class GraphMailClient
      */
     private const array IMMUTABLE_ID_HEADERS = ['Prefer' => 'IdType="ImmutableId"'];
 
+    /**
+     * Messages per result page (Graph defaults to 10, one round trip per 10 messages on long periods).
+     */
+    private const int PAGE_SIZE = 50;
+
     private ?GraphServiceClient $client = null;
 
     /**
@@ -86,6 +91,7 @@ class GraphMailClient
         $queryParameters->select = $select;
         $queryParameters->expand = $expand !== [] ? $expand : null;
         $queryParameters->orderby = ['receivedDateTime asc'];
+        $queryParameters->top = self::PAGE_SIZE;
 
         $requestConfig->queryParameters = $queryParameters;
         $requestConfig->headers = self::IMMUTABLE_ID_HEADERS;

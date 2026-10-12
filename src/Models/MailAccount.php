@@ -35,6 +35,7 @@ use Mupy\MailListeners\Models\Concerns\UsesMailListenersConnection;
  * @property bool $managed Defined in code ({@see \Mupy\MailListeners\Facades\MailListeners::mailbox()}) and kept in sync by the package
  * @property \Illuminate\Support\Carbon|null $last_polled_at
  * @property \Illuminate\Support\Carbon|null $last_received_at
+ * @property string|null $poll_cursor Where the next poll resumes, for connectors reading from their own cursor ({@see \Mupy\MailListeners\Contracts\ReadsNewMessages})
  * @property string|null $last_error
  * @property \Illuminate\Support\Carbon|null $last_error_at
  * @property \Illuminate\Support\Carbon|null $created_at
@@ -64,6 +65,7 @@ class MailAccount extends Model
         'managed',
         'last_polled_at',
         'last_received_at',
+        'poll_cursor',
         'last_error',
         'last_error_at',
     ];

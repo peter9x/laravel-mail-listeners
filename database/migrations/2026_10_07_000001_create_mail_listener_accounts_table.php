@@ -38,6 +38,8 @@ return new class extends Migration
             $table->boolean('managed')->default(false)->index();
             $table->timestampTz('last_polled_at')->nullable();
             $table->timestampTz('last_received_at')->nullable();
+            // Where the next poll resumes, for connectors reading from their own cursor (e.g. the IMAP UID).
+            $table->text('poll_cursor')->nullable();
             $table->text('last_error')->nullable();
             $table->timestampTz('last_error_at')->nullable();
             $table->timestamps();

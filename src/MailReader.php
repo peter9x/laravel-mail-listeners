@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Mupy\MailListeners;
 
 use Carbon\CarbonImmutable;
+use Mupy\MailListeners\Contracts\ReadsNewMessages;
 use Mupy\MailListeners\Data\InboundEmail;
 use Mupy\MailListeners\Enums\MessageStatus;
 use Mupy\MailListeners\Models\MailAccount;
@@ -21,6 +22,11 @@ use Throwable;
  */
 final readonly class MailReader
 {
+    /**
+     * While a poll reads, its cursor is saved at most this often (a single write on the usual short polls).
+     */
+    private const int SAVE_PROGRESS_EVERY_SECONDS = 30;
+
     public function __construct(private Tenancy $tenancy) {}
 
     /**
@@ -102,32 +108,50 @@ final readonly class MailReader
     }
 
     /**
+     * The polling cursor advances only past the emails already recorded (and their events fired), and is saved while
+     * reading, so a poll killed midway (e.g. a job timeout on a long backlog) resumes where it was left.
+     *
      * @throws Throwable
      */
     private function pollInTenant(MailAccount $account): int
     {
+        $connector = $account->mailConnector();
         $newMessages = 0;
         $lastReceivedAt = $account->last_received_at !== null ? CarbonImmutable::instance($account->last_received_at) : null;
+        $cursor = $account->poll_cursor;
+        $savedAt = CarbonImmutable::now();
+
+        $onEmail = function (InboundEmail $email, ?string $emailCursor = null) use ($account, &$newMessages, &$lastReceivedAt, &$cursor, &$savedAt): void {
+            if ($this->record($account, $email)) {
+                $newMessages++;
+            }
+
+            // A date in the future (wrong clock of the sender) must not move the cursor past the emails to come.
+            $receivedAt = $email->receivedAt->min(CarbonImmutable::now());
+
+            if (! $lastReceivedAt instanceof CarbonImmutable || $receivedAt->greaterThan($lastReceivedAt)) {
+                $lastReceivedAt = $receivedAt;
+            }
+
+            $cursor = $emailCursor ?? $cursor;
+
+            if ($savedAt->diffInSeconds(CarbonImmutable::now()) >= self::SAVE_PROGRESS_EVERY_SECONDS) {
+                $account->update(['last_received_at' => $lastReceivedAt, 'poll_cursor' => $cursor]);
+                $savedAt = CarbonImmutable::now();
+            }
+        };
 
         try {
-            $account->mailConnector()->eachMessageBetween(
-                $account,
-                $account->pollSince(),
-                CarbonImmutable::now(),
-                function (InboundEmail $email) use ($account, &$newMessages, &$lastReceivedAt): void {
-                    if (! $lastReceivedAt instanceof CarbonImmutable || $email->receivedAt->greaterThan($lastReceivedAt)) {
-                        $lastReceivedAt = $email->receivedAt;
-                    }
-
-                    if ($this->record($account, $email)) {
-                        $newMessages++;
-                    }
-                },
-            );
+            if ($connector instanceof ReadsNewMessages) {
+                $cursor = $connector->eachNewMessage($account, $account->poll_cursor, $account->pollSince(), $onEmail);
+            } else {
+                $connector->eachMessageBetween($account, $account->pollSince(), CarbonImmutable::now(), $onEmail);
+            }
         } catch (Throwable $exception) {
             $account->update([
                 'last_polled_at' => now(),
                 'last_received_at' => $lastReceivedAt,
+                'poll_cursor' => $cursor,
                 'last_error' => mb_substr($exception->getMessage(), 0, 5000),
                 'last_error_at' => now(),
             ]);
@@ -145,6 +169,7 @@ final readonly class MailReader
         $account->update([
             'last_polled_at' => now(),
             'last_received_at' => $lastReceivedAt,
+            'poll_cursor' => $cursor,
             'last_error' => null,
             'last_error_at' => null,
         ]);
@@ -163,12 +188,14 @@ final readonly class MailReader
 
     /**
      * Record the email and fire its events. Returns false when it was already read.
+     * An email still pending (its process died before firing the events) has them fired now; should another reader be
+     * firing them at the same time, the listeners skip the email they already processed.
      */
     private function record(MailAccount $account, InboundEmail $email): bool
     {
         $message = $this->findOrRecord($account, $email);
 
-        if (! $message->wasRecentlyCreated) {
+        if (! $message->wasRecentlyCreated && $message->status !== MessageStatus::PENDING) {
             return false;
         }
 
@@ -191,7 +218,7 @@ final readonly class MailReader
                 'subject' => mb_substr($email->subjectDecoded, 0, 1000),
                 'from_email' => $email->fromEmail !== null ? mb_substr($email->fromEmail, 0, 255) : null,
                 'received_at' => $email->receivedAt,
-                'status' => MessageStatus::DISPATCHED,
+                'status' => MessageStatus::PENDING,
             ],
         );
     }

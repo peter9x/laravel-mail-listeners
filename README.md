@@ -108,6 +108,12 @@ Every minute `mail-listeners:poll` queues the reading of the mailboxes whose pol
 email, each event of the mailbox is fired and each listener of the event runs in its own queued job. Run a queue worker
 for the `mail-listeners` and `mail-listeners-listeners` queues (see `queues` in the config).
 
+A poll resumes where the previous one stopped, even when it was killed midway (e.g. a job timeout on a first read of
+months of email): its cursor is saved while reading (at most every 30 seconds) and only moves past the emails already
+recorded. An email is recorded as `pending` until its events are fired, and fired again if it is read again still
+pending. IMAP mailboxes are polled by UID: only the messages that arrived since the last poll are fetched, whatever
+their `Date` header says.
+
 ## Mailboxes defined in code
 
 Define the mailboxes in the `mailboxes()` method of the published `App\Providers\MailListenersServiceProvider` (or in

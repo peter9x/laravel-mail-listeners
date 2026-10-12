@@ -4,11 +4,16 @@ declare(strict_types=1);
 
 use Carbon\Carbon;
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Event;
 use Mockery\MockInterface;
 use Mupy\MailListeners\Connectors\ImapConnector;
 use Mupy\MailListeners\Data\InboundEmail;
 use Mupy\MailListeners\Exceptions\ConnectorException;
+use Mupy\MailListeners\MailReader;
 use Mupy\MailListeners\Models\MailAccount;
+use Mupy\MailListeners\Models\MailMessage;
+use Mupy\MailListeners\Tests\Support\Events\SupplierEmailReceived;
 use Webklex\IMAP\Facades\Client;
 use Webklex\PHPIMAP\Address;
 use Webklex\PHPIMAP\Attachment;
@@ -71,19 +76,46 @@ function imapAttachment(string $name, string $mimeType, string $content, ?string
 
 /**
  * Fakes the IMAP server: the facade returns a client whose folder query returns the given messages.
+ * `$calls['messages']` holds the messages of the folder (replace it to receive new ones), `$calls['status']` its
+ * EXAMINE status (default UIDVALIDITY 1 and UIDNEXT after the last message).
  *
  * @param  list<Message>  $messages
  */
 function fakeImapServer(array $messages = [], ?Folder $folder = null, ?Throwable $connectFailure = null): object
 {
-    $calls = new ArrayObject();
+    $calls = new ArrayObject(['messages' => $messages, 'searches' => [], 'fetched' => []]);
+    $uids = fn (): array => array_map(fn (Message $message): int => $message->getUid(), $calls['messages']);
 
     /** @var WhereQuery&MockInterface $query */
     $query = Mockery::mock(WhereQuery::class);
     $query->shouldReceive('leaveUnread')->andReturnUsing(function () use ($query, $calls) {
         $calls['leaveUnread'] = ($calls['leaveUnread'] ?? 0) + 1;
+        unset($calls['criteria']);
 
         return $query;
+    });
+    $query->shouldReceive('where')->andReturnUsing(function (string $criteria) use ($query, $calls) {
+        $calls['criteria'] = $criteria;
+
+        return $query;
+    });
+    // Like a real server, "UID N:*" also returns the last message when there is none above N.
+    $query->shouldReceive('search')->andReturnUsing(function () use ($calls, $uids): Collection {
+        $found = $uids();
+
+        if (preg_match('/^CUSTOM UID (\d+):\*$/', $calls['criteria'] ?? '', $match) === 1 && $found !== []) {
+            $above = array_filter($found, fn (int $uid): bool => $uid >= (int) $match[1]);
+            $found = $above !== [] ? $above : [max($found)];
+        }
+
+        $calls['searches'] = [...$calls['searches'], $calls['criteria'] ?? 'SINCE '.$calls['since']->format('Y-m-d')];
+
+        return collect(array_values($found));
+    });
+    $query->shouldReceive('curate_messages')->andReturnUsing(function (Collection $chunk) use ($calls): MessageCollection {
+        $calls['fetched'] = [...$calls['fetched'], ...$chunk->all()];
+
+        return MessageCollection::make(array_values(array_filter($calls['messages'], fn (Message $message): bool => in_array($message->getUid(), $chunk->all(), true))));
     });
     $query->shouldReceive('setFetchOrder')->andReturnSelf();
     $query->shouldReceive('whereSince')->andReturnUsing(function ($date) use ($query, $calls) {
@@ -96,11 +128,11 @@ function fakeImapServer(array $messages = [], ?Folder $folder = null, ?Throwable
 
         return $query;
     });
-    $query->shouldReceive('chunked')->andReturnUsing(function (callable $callback) use ($messages): void {
-        $callback(MessageCollection::make($messages), 1);
+    $query->shouldReceive('chunked')->andReturnUsing(function (callable $callback) use ($calls): void {
+        $callback(MessageCollection::make($calls['messages']), 1);
     });
-    $query->shouldReceive('getMessageByUid')->andReturnUsing(function (int $uid) use ($messages): Message {
-        foreach ($messages as $message) {
+    $query->shouldReceive('getMessageByUid')->andReturnUsing(function (int $uid) use ($calls): Message {
+        foreach ($calls['messages'] as $message) {
             if ($message->getUid() === $uid) {
                 return $message;
             }
@@ -113,6 +145,7 @@ function fakeImapServer(array $messages = [], ?Folder $folder = null, ?Throwable
         /** @var Folder&MockInterface $folder */
         $folder = Mockery::mock(Folder::class);
         $folder->shouldReceive('query')->andReturn($query);
+        $folder->shouldReceive('examine')->andReturnUsing(fn (): array => $calls['status'] ?? ['uidvalidity' => 1, 'uidnext' => max([0, ...$uids()]) + 1]);
     }
 
     /** @var ImapClient&MockInterface $client */
@@ -323,4 +356,108 @@ it('marks the inline attachments', function (): void {
         ['extrato.pdf', false],
         ['logo.png', true],
     ]);
+});
+
+it('polls by date the first time, then only the messages above the last UID, whatever their dates', function (): void {
+    $account = MailAccount::factory()->imap()->create();
+    $calls = fakeImapServer([
+        imapMessage(['uid' => 1, 'message_id' => 'old@example.com', 'date' => '2026-10-06 08:59:59']),
+        imapMessage(['uid' => 2, 'message_id' => 'new@example.com', 'date' => '2026-10-06 10:00:00']),
+    ]);
+    $read = [];
+    $collect = function (InboundEmail $email, string $cursor) use (&$read): void {
+        $read[] = [$email->providerMessageId, json_decode($cursor, true)['uid']];
+    };
+
+    $cursor = app(ImapConnector::class)->eachNewMessage($account, null, CarbonImmutable::parse('2026-10-06 09:00:00', 'UTC'), $collect);
+
+    expect($read)->toBe([['2', 2]])
+        ->and(json_decode($cursor, true))->toBe(['folder' => 'INBOX', 'uidvalidity' => 1, 'uid' => 2])
+        ->and($calls['searches'])->toBe(['SINCE 2026-10-05']);
+
+    // Received now, but its Date header is days old (wrong clock of the sender, late delivery): still read.
+    $calls['messages'] = [...$calls['messages'], imapMessage(['uid' => 3, 'message_id' => 'late@example.com', 'date' => '2026-10-01 10:00:00'])];
+    $read = [];
+
+    $cursor = app(ImapConnector::class)->eachNewMessage($account, $cursor, CarbonImmutable::parse('2026-10-06 09:55:00', 'UTC'), $collect);
+
+    expect($read)->toBe([['3', 3]])
+        ->and(json_decode($cursor, true)['uid'])->toBe(3)
+        ->and($calls['searches'][1])->toBe('CUSTOM UID 3:*')
+        ->and($calls['fetched'])->toBe([1, 2, 3]);
+});
+
+it('does not search the folder when no message arrived since the last poll', function (): void {
+    $account = MailAccount::factory()->imap()->create();
+    $calls = fakeImapServer([imapMessage(['uid' => 5])]);
+    $cursor = json_encode(['folder' => 'INBOX', 'uidvalidity' => 1, 'uid' => 5]);
+
+    $result = app(ImapConnector::class)->eachNewMessage($account, $cursor, CarbonImmutable::now(), fn () => throw new LogicException('No message expected'));
+
+    expect($result)->toBe($cursor)
+        ->and($calls['searches'])->toBe([])
+        ->and($calls['fetched'])->toBe([])
+        ->and($calls['disconnected'])->toBeTrue();
+});
+
+it('skips the last message matched by "UID N:*" when there is none above N', function (): void {
+    $account = MailAccount::factory()->imap()->create();
+    $calls = fakeImapServer([imapMessage(['uid' => 5])]);
+    $calls['status'] = ['uidvalidity' => 1];
+    $cursor = json_encode(['folder' => 'INBOX', 'uidvalidity' => 1, 'uid' => 5]);
+
+    $result = app(ImapConnector::class)->eachNewMessage($account, $cursor, CarbonImmutable::now(), fn () => throw new LogicException('No message expected'));
+
+    expect($result)->toBe($cursor)
+        ->and($calls['searches'])->toBe(['CUSTOM UID 6:*'])
+        ->and($calls['fetched'])->toBe([]);
+});
+
+it('reads by date again when the folder changed or its UIDs were reset', function (array $cursor): void {
+    $account = MailAccount::factory()->imap()->create();
+    $calls = fakeImapServer([imapMessage(['uid' => 2, 'date' => '2026-10-06 10:00:00'])]);
+    $read = [];
+
+    $result = app(ImapConnector::class)->eachNewMessage($account, json_encode($cursor), CarbonImmutable::parse('2026-10-06 09:00:00', 'UTC'), function (InboundEmail $email) use (&$read): void {
+        $read[] = $email->providerMessageId;
+    });
+
+    expect($read)->toBe(['2'])
+        ->and($calls['searches'])->toBe(['SINCE 2026-10-05'])
+        ->and(json_decode($result, true))->toBe(['folder' => 'INBOX', 'uidvalidity' => 1, 'uid' => 2]);
+})->with([
+    'another UIDVALIDITY' => [['folder' => 'INBOX', 'uidvalidity' => 7, 'uid' => 90]],
+    'another folder' => [['folder' => 'Faturas', 'uidvalidity' => 1, 'uid' => 90]],
+]);
+
+it('keeps the UID cursor on the account between polls', function (): void {
+    Event::fake([SupplierEmailReceived::class]);
+    $this->travelTo(CarbonImmutable::parse('2026-10-06 12:00:00', 'UTC'));
+    $account = MailAccount::factory()->imap()->withEvents(['supplier'])->create(['read_from' => '2026-10-06 00:00:00']);
+    $calls = fakeImapServer([imapMessage(['uid' => 1, 'message_id' => 'first@example.com'])]);
+
+    app(MailReader::class)->poll($account);
+    $calls['messages'] = [...$calls['messages'], imapMessage(['uid' => 2, 'message_id' => 'late@example.com', 'date' => '2026-09-30 10:00:00'])];
+    $newMessages = app(MailReader::class)->poll($account->refresh());
+
+    expect($newMessages)->toBe(1)
+        ->and(json_decode((string) $account->refresh()->poll_cursor, true)['uid'])->toBe(2)
+        ->and($calls['fetched'])->toBe([1, 2])
+        ->and(MailMessage::query()->count())->toBe(2);
+    Event::assertDispatchedTimes(SupplierEmailReceived::class, 2);
+});
+
+it('never moves the last received date of the account past now, whatever the Date header says', function (): void {
+    Event::fake([SupplierEmailReceived::class]);
+    $this->travelTo(CarbonImmutable::parse('2026-10-06 12:00:00', 'UTC'));
+    $account = MailAccount::factory()->imap()->withEvents(['supplier'])->create([
+        'poll_cursor' => json_encode(['folder' => 'INBOX', 'uidvalidity' => 1, 'uid' => 1]),
+        'last_received_at' => '2026-10-06 11:00:00',
+    ]);
+    fakeImapServer([imapMessage(['uid' => 2, 'date' => '2030-01-01 00:00:00'])]);
+
+    app(MailReader::class)->poll($account);
+
+    expect($account->refresh()->last_received_at->toDateTimeString())->toBe('2026-10-06 12:00:00');
+    Event::assertDispatchedTimes(SupplierEmailReceived::class, 1);
 });

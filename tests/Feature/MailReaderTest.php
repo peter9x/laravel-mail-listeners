@@ -217,3 +217,51 @@ it('reads a period the same way without a callback', function (): void {
         ->and(MailMessage::query()->count())->toBe(2);
     Event::assertDispatchedTimes(SupplierEmailReceived::class, 2);
 });
+
+it('fires the events of an email recorded by a read that died before firing them', function (): void {
+    Event::fake([SupplierEmailReceived::class]);
+    $account = MailAccount::factory()->withEvents(['supplier'])->create();
+    $email = FakeConnector::makeEmail($account);
+    $this->connector->messages = [$email];
+    MailMessage::factory()->for($account, 'account')->create(['dedup_key' => $email->dedupKey(), 'status' => MessageStatus::PENDING]);
+
+    $newMessages = app(MailReader::class)->poll($account);
+
+    expect($newMessages)->toBe(1)
+        ->and(MailMessage::query()->sole()->status)->toBe(MessageStatus::DISPATCHED);
+    Event::assertDispatchedTimes(SupplierEmailReceived::class, 1);
+});
+
+it('records an email as pending until its events are fired', function (): void {
+    $account = MailAccount::factory()->withEvents(['supplier'])->create();
+    $this->connector->messages = [FakeConnector::makeEmail($account)];
+    $statuses = [];
+    Event::listen(SupplierEmailReceived::class, function (SupplierEmailReceived $event) use (&$statuses): void {
+        $statuses[] = MailMessage::query()->findOrFail($event->email->messageId)->status;
+    });
+
+    app(MailReader::class)->poll($account);
+
+    expect($statuses)->toBe([MessageStatus::PENDING])
+        ->and(MailMessage::query()->sole()->status)->toBe(MessageStatus::DISPATCHED);
+});
+
+it('saves the polling cursor while reading a long backlog, so a killed poll resumes where it was left', function (): void {
+    $account = MailAccount::factory()->withEvents(['supplier'])->create(['read_from' => '2026-10-01 00:00:00', 'last_received_at' => null]);
+    $this->connector->messages = [
+        FakeConnector::makeEmail($account, ['subject' => '1', 'receivedAt' => CarbonImmutable::parse('2026-10-06 09:00:00')]),
+        FakeConnector::makeEmail($account, ['subject' => '2', 'receivedAt' => CarbonImmutable::parse('2026-10-06 10:00:00')]),
+        FakeConnector::makeEmail($account, ['subject' => '3', 'receivedAt' => CarbonImmutable::parse('2026-10-06 11:00:00')]),
+    ];
+    $savedCursors = [];
+    // Each email takes 20 seconds to dispatch: the cursor is saved every 30 seconds.
+    Event::listen(SupplierEmailReceived::class, function () use ($account, &$savedCursors): void {
+        $savedCursors[] = $account->newQuery()->findOrFail($account->id)->last_received_at?->toDateTimeString();
+        $this->travel(20)->seconds();
+    });
+
+    app(MailReader::class)->poll($account);
+
+    expect($savedCursors)->toBe([null, null, '2026-10-06 10:00:00'])
+        ->and($account->refresh()->last_received_at->toDateTimeString())->toBe('2026-10-06 11:00:00');
+});

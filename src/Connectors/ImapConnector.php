@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace Mupy\MailListeners\Connectors;
 
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Collection;
 use Illuminate\Validation\Rule;
 use Mupy\MailListeners\Contracts\MailConnector;
+use Mupy\MailListeners\Contracts\ReadsNewMessages;
 use Mupy\MailListeners\Data\EmailAttachment;
 use Mupy\MailListeners\Data\InboundEmail;
 use Mupy\MailListeners\Exceptions\ConnectorException;
@@ -22,12 +24,12 @@ use Webklex\PHPIMAP\Support\MessageCollection;
 
 /**
  * Reads a mailbox through IMAP (user + password). Messages are always fetched with BODY.PEEK (leaveUnread),
- * so the mailbox is never changed.
+ * so the mailbox is never changed. Polls read by UID ({@see eachNewMessage()}), periods by date.
  *
  * Connector settings: `host`, `port`, `encryption` (ssl, tls, starttls, none), `validate_cert`,
  * `username`, `password` (secret) and `folder` (default `mail-listeners.imap.default_folder`, "INBOX").
  */
-final readonly class ImapConnector implements MailConnector
+final readonly class ImapConnector implements MailConnector, ReadsNewMessages
 {
     public const int DEFAULT_PORT = 993;
 
@@ -102,6 +104,61 @@ final readonly class ImapConnector implements MailConnector
         });
     }
 
+    /**
+     * Polls by UID: only the messages above the last UID read are fetched, whatever their dates. The cursor holds the
+     * folder, its UIDVALIDITY and the last UID; when the folder changes or its UIDs are reset (another UIDVALIDITY),
+     * the messages since $since are read by date once (the emails already read are skipped by the reader).
+     */
+    public function eachNewMessage(MailAccount $account, ?string $cursor, CarbonImmutable $since, callable $callback): string
+    {
+        $folderPath = $account->connectorSetting('folder', self::defaultFolder());
+
+        return $this->withFolder($account, function (Folder $folder) use ($account, $folderPath, $cursor, $since, $callback): string {
+            $status = $folder->examine();
+            $uidValidity = (int) ($status['uidvalidity'] ?? 0);
+            $uidNext = isset($status['uidnext']) ? (int) $status['uidnext'] : null;
+            $lastUid = $this->lastUid($cursor, $folderPath, $uidValidity);
+
+            if ($lastUid !== null && $uidNext !== null && $uidNext <= $lastUid + 1) {
+                return $this->cursor($folderPath, $uidValidity, $lastUid);
+            }
+
+            $query = $folder->query()->leaveUnread();
+            $readSince = null;
+
+            if ($lastUid === null) {
+                // IMAP SEARCH only filters by day (in the server timezone): search a wider window, filter exactly below.
+                $readSince = $since;
+                $uids = $this->sortedUids($query->whereSince($since->subDay()->startOfDay())->search());
+                $lastUid = max(0, ($uidNext ?? 1) - 1, ...$uids);
+            } else {
+                // CUSTOM keeps the UID set unquoted (whereUid() would quote it). "N:*" also matches the last message
+                // when there is none above N: keep only the UIDs above the cursor.
+                $uids = array_values(array_filter(
+                    $this->sortedUids($query->where('CUSTOM UID '.($lastUid + 1).':*')->search()),
+                    fn (int $uid): bool => $uid > $lastUid,
+                ));
+            }
+
+            // Only the messages found are fetched (with their body), a chunk per IMAP round trip.
+            foreach (array_chunk($uids, self::CHUNK_SIZE) as $chunk) {
+                $messages = $query->curate_messages(collect($chunk))->sortBy(fn (Message $message): int => (int) $message->getUid());
+
+                foreach ($messages as $message) {
+                    $email = $this->toInboundEmail($account, $message);
+                    $uid = (int) $message->getUid();
+                    $lastUid = max($lastUid, $uid);
+
+                    if (! $readSince instanceof CarbonImmutable || $email->receivedAt->greaterThanOrEqualTo($readSince)) {
+                        $callback($email, $this->cursor($folderPath, $uidValidity, $uid));
+                    }
+                }
+            }
+
+            return $this->cursor($folderPath, $uidValidity, $lastUid);
+        });
+    }
+
     public function message(MailAccount $account, string $providerMessageId): InboundEmail
     {
         return $this->withFolder(
@@ -132,6 +189,37 @@ final readonly class ImapConnector implements MailConnector
     public function testConnection(MailAccount $account): void
     {
         $this->withFolder($account, fn (): null => null);
+    }
+
+    /**
+     * @param  Collection<int, mixed>  $uids
+     * @return list<int>
+     */
+    private function sortedUids(Collection $uids): array
+    {
+        $sorted = array_map(intval(...), $uids->values()->all());
+        sort($sorted);
+
+        return $sorted;
+    }
+
+    private function cursor(string $folder, int $uidValidity, int $uid): string
+    {
+        return (string) json_encode(['folder' => $folder, 'uidvalidity' => $uidValidity, 'uid' => $uid]);
+    }
+
+    /**
+     * Last UID read, or null when there is no cursor yet or it belongs to another folder or UIDVALIDITY.
+     */
+    private function lastUid(?string $cursor, string $folder, int $uidValidity): ?int
+    {
+        $data = $cursor !== null ? json_decode($cursor, true) : null;
+
+        if (! is_array($data) || ($data['folder'] ?? null) !== $folder || ($data['uidvalidity'] ?? null) !== $uidValidity || ! is_int($data['uid'] ?? null)) {
+            return null;
+        }
+
+        return $data['uid'];
     }
 
     /**
